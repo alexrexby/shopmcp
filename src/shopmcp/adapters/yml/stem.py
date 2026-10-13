@@ -39,3 +39,28 @@ def stems(text: str | None) -> list[str]:
 
 def stem_text(text: str | None) -> str:
     return " ".join(stems(text))
+
+
+# Russian consonant alternation at the end of an adjective's root: творожный <- творог,
+# молочный <- молоко, пшеничный <- пшеница. Snowball keeps the alternated consonant.
+_ALTERNATIONS = {"ж": "гз", "ч": "кц", "ш": "х", "щ": ("ст",)}
+_CONSONANT = re.compile("[бвгджзйклмнпрстфхцчшщ]")
+
+
+def variants(stem: str) -> list[str]:
+    """`stem` plus the stems of the noun an adjective is made of, for query expansion.
+
+    Only relative adjectives (`-н-` after a consonant, `-ов-`/`-ев-`) get variants, so a
+    noun query like "молоко" (stem `молок`) is searched exactly as before.
+    """
+    out = [stem]
+    base = stem
+    if len(base) >= 5 and base[-2:] in ("ов", "ев"):
+        base = base[:-2]
+        out.append(base)
+    if len(base) >= 4 and base[-1] == "н" and _CONSONANT.match(base[-2]):
+        base = base[:-1]
+        out.append(base)
+    if base != stem:
+        out += [base[:-1] + alt for alt in _ALTERNATIONS.get(base[-1], ())]
+    return out

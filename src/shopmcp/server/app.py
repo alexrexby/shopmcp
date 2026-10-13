@@ -3,6 +3,7 @@ rate limit and, when enabled, auth. Every SDK call of the server side lives here
 `server/auth.py`."""
 
 import functools
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from shopmcp import __version__
 from shopmcp.adapters import registry
@@ -43,6 +44,41 @@ def check_text_keys(cfg: StoreConfig, specs: Iterable[ToolSpec]) -> None:
         raise ConfigError(f"texts: unknown keys {unknown}")
 
 
+def check_tool_scopes(cfg: StoreConfig, specs: Iterable[ToolSpec]) -> None:
+    """A misspelled `[auth.tool_scopes]` key would leave the real tool on its default."""
+    unknown = sorted(set(cfg.auth.tool_scopes) - {spec.suffix for spec in specs})
+    if unknown:
+        raise ConfigError(f"auth.tool_scopes: unknown tools {unknown}")
+
+
+class PostOnly:
+    """Only POST reaches the MCP endpoint. The server is stateless and answers in JSON, yet
+    the SDK still opens a never-ending SSE stream on GET; here GET and the rest get 405."""
+
+    def __init__(self, app: ASGIApp, path: str) -> None:
+        self.app = app
+        self.paths = {path, path.rstrip("/") + "/"}
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] not in self.paths or scope["method"] == "POST":
+            await self.app(scope, receive, send)
+            return
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32000, "message": "Method Not Allowed"},
+            }
+        ).encode()
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+            (b"allow", b"POST"),
+        ]
+        await send({"type": "http.response.start", "status": 405, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+
 def guarded(
     fn: Callable[..., Awaitable[CallToolResult]], texts: Texts
 ) -> Callable[..., Awaitable[CallToolResult]]:
@@ -62,16 +98,25 @@ def guarded(
 
 
 def build_app(
-    cfg: StoreConfig, *, adapter: ShopAdapter | None = None, data_dir: Path = Path("data")
+    cfg: StoreConfig,
+    *,
+    adapter: ShopAdapter | None = None,
+    data_dir: Path = Path("data"),
+    config_dir: Path = Path("."),
 ) -> ASGIApp:
-    """`adapter` overrides the one from `cfg.adapter` (tests); `data_dir` holds its index."""
+    """`adapter` overrides the one from `cfg.adapter` (tests); `data_dir` holds its index;
+    relative paths in the config start at `config_dir`, the directory of store.toml."""
     texts = Texts(cfg.locale, cfg.texts)
     if adapter is None:
-        ctx = AdapterContext(data_dir=data_dir, http_timeout=HTTP_TIMEOUT, store_id=cfg.id)
+        ctx = AdapterContext(
+            data_dir=data_dir, http_timeout=HTTP_TIMEOUT, store_id=cfg.id, config_dir=config_dir
+        )
         adapter = registry.create(cfg.adapter, ctx)
     shop = adapter  # narrowed for the closures below
     cart = strategies.create(cfg.cart, shop, texts)
-    check_text_keys(cfg, canonical_tools(cfg, shop, cart))
+    canonical = canonical_tools(cfg, shop, cart)
+    check_text_keys(cfg, canonical)
+    check_tool_scopes(cfg, canonical)
     specs = build_tools(cfg, shop, cart)
 
     @asynccontextmanager
@@ -89,6 +134,9 @@ def build_app(
         website_url=str(cfg.site),
         version=__version__,
         lifespan=lifespan,
+        # No events to publish: subscriptions/listen (2026-07-28) would only hold open an
+        # endless SSE stream over POST, the same class as GET that PostOnly refuses.
+        subscriptions=False,
     )
     for spec in specs:
         key = f"tool.{spec.suffix}"
@@ -121,16 +169,17 @@ def build_app(
             allowed_hosts=cfg.server.allowed_hosts, allowed_origins=cfg.server.allowed_origins
         ),
     )
-    app = RateLimit(
-        app,
-        cfg.limits.rate_per_minute,
-        trusted_proxies=cfg.server.trusted_proxies,
-        exempt_paths=(HEALTH_PATH,),
-    )
+    app = PostOnly(app, cfg.server.path)
     if cfg.auth.enabled:
         # Imported only here: a store without auth does not depend on the auth module.
         from shopmcp.server.auth import wrap_with_auth
 
         tool_scopes = {f"{cfg.prefix}_{s.suffix}": s.scopes for s in specs if s.scopes}
         app = wrap_with_auth(app, cfg, tool_scopes)
-    return app
+    # Outermost: a token check costs a JWKS lookup, so it is counted like any request.
+    return RateLimit(
+        app,
+        cfg.limits.rate_per_minute,
+        trusted_proxies=cfg.server.trusted_proxies,
+        exempt_paths=(HEALTH_PATH,),
+    )

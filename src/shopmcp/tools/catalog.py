@@ -17,7 +17,7 @@ from shopmcp.domain.models import (
     ProductPage,
     ProductSummary,
 )
-from shopmcp.envelope import ok
+from shopmcp.envelope import ok, size
 from shopmcp.errors import InvalidInput, NotFound
 from shopmcp.i18n import L10n
 from shopmcp.tools.spec import READ_ONLY, ToolSpec, page_meta
@@ -110,8 +110,14 @@ def tools(cfg: StoreConfig, adapter: ShopAdapter) -> list[ToolSpec]:
     ) -> Annotated[CallToolResult, ProductDetails]:
         wanted = list(dict.fromkeys(ids))
         found = await adapter.get_products(wanted)
+        if not found:  # nothing to show is an error, a partial answer is not
+            raise NotFound(details={"missing": wanted})
         have = {p.id for p in found}
-        return ok(ProductDetails(items=found, missing=[i for i in wanted if i not in have]))
+        result = ProductDetails(items=found, missing=[i for i in wanted if i not in have])
+        # Full cards are big: over the budget the last ones move to `omitted`.
+        while result.items and size(result) > budget:
+            result.omitted.insert(0, result.items.pop().id)
+        return ok(result)
 
     async def product_by_barcode(
         barcode: Annotated[str, Field(pattern=r"^(\d{8}|\d{12,14})$")],
@@ -187,9 +193,13 @@ def tools(cfg: StoreConfig, adapter: ShopAdapter) -> list[ToolSpec]:
             title=L10n(ru="Карточки товаров", en="Product details"),
             description=L10n(
                 ru=f"Полные карточки товаров по id, от 1 до {MAX_DETAILS_IDS} за вызов. "
-                "Ненайденные id перечислены в missing.",
+                "Ненайденные id перечислены в missing; если не найден ни один — ошибка "
+                "not_found. Карточки, не поместившиеся в ответ, перечислены в omitted: "
+                "запросите их отдельным вызовом.",
                 en=f"Full product cards by id, 1 to {MAX_DETAILS_IDS} per call. "
-                "Ids that were not found are listed in missing.",
+                "Ids that were not found are listed in missing; if none is found, the result "
+                "is a not_found error. Cards that did not fit into the response are listed in "
+                "omitted: request them in another call.",
             ),
             params={
                 "ids": L10n(

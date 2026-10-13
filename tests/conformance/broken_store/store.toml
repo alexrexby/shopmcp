@@ -1,0 +1,35 @@
+# What the broken store PROMISES: conformance holds the server to this config.
+# The server itself is built by store.py with one defect switched on at a time.
+id = "broken"
+prefix = "broken"
+brand = "Сломанный магазин"
+site = "https://broken.example"
+locale = "ru"
+instructions = """Тестовый магазин для положительного контроля conformance."""
+
+[adapter]
+kind = "broken"                               # registered by store.py: FakeAdapter
+
+[cart]
+strategy = "url_template"
+url_template = "https://broken.example/cart/add?{items}"
+item_template = "id[]={id}&qty[]={qty}"
+
+[limits]
+max_page_size = 20
+max_cart_lines = 30
+max_response_bytes = 24000
+rate_per_minute = 60
+
+[server]
+path = "/mcp"
+public_url = "http://localhost:8000/mcp"
+
+[auth]
+enabled = true                                # so C13 runs, not skips
+issuer = "https://id.broken.example"
+jwks_uri = "http://127.0.0.1:9/jwks"          # never fetched: the checks send no token
+
+[conformance]
+sample_query = "молоко"
+sample_barcode = "4600000000017"

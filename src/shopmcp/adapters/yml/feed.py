@@ -24,6 +24,7 @@ from shopmcp.domain.text import clean_text
 
 _CHUNK = 64 * 1024
 _PROLOG = 4096
+MAX_OFFER_NODES = 10_000  # elements inside one <offer>; more is not a product, it is an attack
 # Stdlib expat never resolves external entities and caps entity expansion (>=2.4.1);
 # a feed has no business declaring entities at all, so an internal DTD is refused.
 _INTERNAL_DTD = re.compile(rb"<!DOCTYPE[^>]*\[|<!ENTITY")
@@ -56,6 +57,19 @@ class _Capped:
         return data
 
 
+def redact(source: str) -> str:
+    """The feed source fit for logs: a URL loses userinfo, query and fragment, where
+    a `${ENV}` secret usually sits (`...yml.php?key=...`); a path stays as it is."""
+    parts = urllib.parse.urlsplit(source)
+    if not parts.scheme:
+        return source
+    host = parts.hostname or ""
+    netloc = f"[{host}]" if ":" in host else host
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
 @contextmanager
 def open_feed(source: str, *, timeout: float, max_bytes: int) -> Iterator[BinaryIO]:
     """Open a local path or an https URL; `.gz` is decompressed, both sizes are capped."""
@@ -85,9 +99,16 @@ def open_feed(source: str, *, timeout: float, max_bytes: int) -> Iterator[Binary
 
 
 def parse(stream: BinaryIO, stats: FeedStats) -> Iterator[Category | Product]:
-    """Yield categories (once `<categories>` closes) and valid offers in feed order."""
+    """Yield categories (once `<categories>` closes) and valid offers in feed order.
+
+    Every element is dropped from the tree as soon as it closes, unless it is inside an
+    `<offer>` still being read: memory is bound by the largest offer, not by the feed.
+    An offer with more than `MAX_OFFER_NODES` descendants is skipped as invalid.
+    """
     parser = ET.XMLPullParser(events=("start", "end"))
-    offers: ET.Element | None = None
+    stack: list[ET.Element] = []  # open elements, root first
+    offer: ET.Element | None = None  # the offer being read
+    offer_nodes = 0
     raw_categories: dict[str, tuple[str, str | None]] = {}  # id -> (name, parent_id)
     paths: dict[str, list[str]] = {}
     head = True
@@ -108,33 +129,57 @@ def parse(stream: BinaryIO, stats: FeedStats) -> Iterator[Category | Product]:
             for event, elem in parser.read_events():
                 tag = elem.tag
                 if event == "start":
-                    if tag == "offers":
-                        offers = elem
+                    stack.append(elem)
+                    if offer is not None:
+                        offer_nodes += 1
+                    elif tag == "offer":
+                        offer, offer_nodes = elem, 0
                     elif tag == "yml_catalog":
                         stats.date = elem.get("date")
-                elif tag == "category":
+                    continue
+                stack.pop()
+                if offer is not None and elem is not offer:
+                    # Kept for _offer() unless the offer is already too big to be valid.
+                    if offer_nodes > MAX_OFFER_NODES:
+                        elem.clear()
+                    continue
+                if tag == "category":
                     cid = clean_text(elem.get("id"))
                     name = clean_text(elem.text)
                     if cid and name:
                         raw_categories[cid] = (name, clean_text(elem.get("parentId")))
                 elif tag == "categories":
                     paths = _paths(raw_categories)
-                    for cid, (name, parent) in raw_categories.items():
-                        yield Category(id=cid, name=name, parent_id=parent, path=paths[cid])
-                    elem.clear()
+                    for cid, (name, parent_id) in raw_categories.items():
+                        yield Category(id=cid, name=name, parent_id=parent_id, path=paths[cid])
                 elif tag == "offer":
                     stats.offers += 1
-                    product = _offer(elem, paths)
+                    product = None if offer_nodes > MAX_OFFER_NODES else _offer(elem, paths)
+                    offer = None
                     if product is None:
                         stats.skipped += 1
                     else:
                         yield product
-                    # Drop finished offers from the tree; the parent keeps no children.
-                    (offers if offers is not None else elem).clear()
+                elem.clear()  # closed and read; _prune() detaches the empty shell
+            _prune(stack, offer if offer_nodes <= MAX_OFFER_NODES else None)
             if not chunk:
                 return
     except ET.ParseError as e:
         raise FeedError(f"invalid XML: {e}") from e
+
+
+def _prune(stack: list[ET.Element], keep: ET.Element | None) -> None:
+    """Detach every closed child of the open elements, down to `keep` (an offer still
+    being read keeps its subtree for _offer). Events arrive a chunk at a time, so a parent
+    may hold many closed children by now, but only its last child can still be open."""
+    for depth, elem in enumerate(stack):
+        if elem is keep:
+            return
+        open_child = stack[depth + 1] if depth + 1 < len(stack) else None
+        if open_child is not None and len(elem) and elem[-1] is open_child:
+            del elem[:-1]
+        else:
+            del elem[:]
 
 
 def _paths(raw: dict[str, tuple[str, str | None]]) -> dict[str, list[str]]:

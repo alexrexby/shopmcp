@@ -3,12 +3,14 @@
 import gzip
 import io
 import re
+import time
+import tracemalloc
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
-from shopmcp.adapters.yml.feed import FeedError, FeedStats, open_feed, parse
+from shopmcp.adapters.yml.feed import MAX_OFFER_NODES, FeedError, FeedStats, open_feed, parse
 from shopmcp.adapters.yml.stem import normalize, stems
 from shopmcp.domain.models import Category, Product
 
@@ -194,3 +196,55 @@ def test_stems_join_word_forms_and_fold_yo():
     # Snowball keeps the suffix alternation г/ж: творожный does not reduce to творог.
     assert stems("творог творожный") == ["творог", "творожн"]
     assert stems("!!!") == []
+
+
+GOOD_OFFER = (
+    '<offer id="1"><url>https://demo.example/p/1</url><price>10</price><name>Молоко</name></offer>'
+).encode()
+
+
+def peak_bytes(raw: bytes) -> tuple[int, FeedStats]:
+    stats = FeedStats()
+    tracemalloc.start()
+    try:
+        list(parse(io.BytesIO(raw), stats))
+        return tracemalloc.get_traced_memory()[1], stats
+    finally:
+        tracemalloc.stop()
+
+
+def test_memory_does_not_grow_with_junk_outside_offers():
+    # Security Н4: unknown elements in <shop> used to stay in the tree (~22x the feed;
+    # 26 MB peak at 300k <x/> before the fix). Now the peak is one chunk of events.
+    def junk_feed(n: int) -> bytes:
+        return (
+            b"<yml_catalog><shop>"
+            + b"<x/>" * n
+            + b"<offers>"
+            + GOOD_OFFER
+            + b"</offers></shop></yml_catalog>"
+        )
+
+    small, _ = peak_bytes(junk_feed(30_000))
+    big, stats = peak_bytes(junk_feed(300_000))
+    assert stats.offers == 1 and stats.skipped == 0
+    assert big < 8 * 1024 * 1024 and big < small * 1.5, (small, big)
+
+
+def test_offer_with_too_many_children_is_skipped_quickly():
+    params = b'<param name="p">v</param>' * (MAX_OFFER_NODES * 5)
+    huge = (
+        b'<offer id="2"><url>https://demo.example/p/2</url><price>1</price><name>x</name>' + params
+    )
+    raw = (
+        b"<yml_catalog><shop><offers>"
+        + huge
+        + b"</offer>"
+        + GOOD_OFFER
+        + b"</offers></shop></yml_catalog>"
+    )
+    started = time.monotonic()
+    peak, stats = peak_bytes(raw)
+    assert time.monotonic() - started < 10  # remove() per element would be quadratic
+    assert (stats.offers, stats.skipped) == (2, 1)
+    assert peak < 16 * 1024 * 1024, peak

@@ -8,7 +8,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError, model_validator
 
@@ -52,6 +52,7 @@ class CartConfig(Section):
 class LimitsConfig(Section):
     max_page_size: int = Field(20, ge=1, le=100)
     max_cart_lines: int = Field(30, ge=1, le=200)
+    max_quantity: int = Field(99, ge=1, le=10000)  # per cart line
     max_response_bytes: int = Field(24000, ge=1024)
     rate_per_minute: int = Field(60, ge=1)
 
@@ -70,7 +71,9 @@ class AuthConfig(Section):
     enabled: bool = False
     issuer: str = ""
     jwks_uri: str = ""
-    tool_scopes: dict[str, list[str]] = {}  # tool suffix -> required scopes
+    # tool suffix -> required scopes; overrides the tool's default. Never empty: a personal
+    # tool without a scope would be public, and a public tool needs no entry at all.
+    tool_scopes: dict[str, Annotated[list[str], Field(min_length=1)]] = {}
 
     @model_validator(mode="after")
     def _complete_when_enabled(self) -> "AuthConfig":

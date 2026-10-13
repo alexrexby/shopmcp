@@ -15,6 +15,20 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _PRUNE_EVERY = 1024  # requests between sweeps of idle buckets
+IPV6_PREFIX = 64  # one host gets a whole /64: rotating inside it must not buy new buckets
+
+
+def bucket_key(ip: str) -> str:
+    """The bucket of a client: IPv4 as is, IPv4-mapped IPv6 as its IPv4, IPv6 by /64."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/{IPV6_PREFIX}", strict=False))
+    return ip
 
 
 class RateLimit:
@@ -80,7 +94,7 @@ class RateLimit:
         if scope["type"] != "http" or scope["path"] in self.exempt:
             await self.app(scope, receive, send)
             return
-        wait = self.take(self.client_ip(scope))
+        wait = self.take(bucket_key(self.client_ip(scope)))
         if not wait:
             await self.app(scope, receive, send)
             return

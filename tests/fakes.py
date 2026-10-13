@@ -144,6 +144,6 @@ class FakeAdapter(AdapterBase):
         ids = ",".join(f"{line.product_id}:{line.quantity}" for line in lines)
         return HttpUrl(f"https://shop.example/?cart={ids}")
 
-    async def orders(self, token: AccessToken, page: int) -> tuple[list[Order], int]:
+    async def orders(self, token: AccessToken, page: int, limit: int) -> tuple[list[Order], int]:
         self._need(Capability.ORDERS)
-        return self._orders[(page - 1) * 10 : page * 10], len(self._orders)
+        return self._orders[(page - 1) * limit : page * limit], len(self._orders)

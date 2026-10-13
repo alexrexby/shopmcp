@@ -1,4 +1,5 @@
-"""Cart handoff tool: present in every store, `link_list` is the fallback strategy."""
+"""Cart handoff tool: present in every store that can look products up by id (the cart
+is checked against the catalog first); `link_list` is the fallback strategy."""
 
 from decimal import Decimal
 from typing import Annotated
@@ -7,6 +8,7 @@ from mcp.types import CallToolResult, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from shopmcp.adapters.base import ShopAdapter
+from shopmcp.capabilities import Capability
 from shopmcp.cart.strategies import CartStrategy
 from shopmcp.config import StoreConfig
 from shopmcp.domain.models import CartHandoff, CartLine
@@ -21,16 +23,16 @@ CREATES_SHARE_LINK = ToolAnnotations(
 )
 
 
-class LineIn(BaseModel):
-    # No field descriptions: the localized `lines` description covers them.
-    model_config = ConfigDict(extra="forbid")
-    id: str
-    quantity: float = Field(gt=0)
-
-
 def tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[ToolSpec]:
-    # One constant feeds both the schema (maxItems) and the description: defect 6.
+    # One constant feeds both the schema (maxItems, maximum) and the description: defect 6.
     max_lines = cfg.limits.max_cart_lines
+    max_qty = cfg.limits.max_quantity
+
+    class LineIn(BaseModel):
+        # No field descriptions: the localized `lines` description covers them.
+        model_config = ConfigDict(extra="forbid")
+        id: str
+        quantity: float = Field(gt=0, le=max_qty)
 
     async def cart_link_create(
         lines: Annotated[list[LineIn], Field(min_length=1, max_length=max_lines)],
@@ -48,7 +50,8 @@ def tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[To
     return [
         ToolSpec(
             suffix="cart_link_create",
-            requires=frozenset(),
+            # Without DETAILS every call would fail: unknown ids are refused before the handoff.
+            requires=frozenset({Capability.DETAILS}),
             scopes=(),
             annotations=CREATES_SHARE_LINK if cart.kind == "share_link" else READ_ONLY,
             output_model=CartHandoff,
@@ -66,8 +69,10 @@ def tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[To
             ),
             params={
                 "lines": L10n(
-                    ru=f"Позиции корзины, от 1 до {max_lines}: id товара и количество",
-                    en=f"Cart lines, 1 to {max_lines}: product id and quantity",
+                    ru=f"Позиции корзины, от 1 до {max_lines}: id товара и количество "
+                    f"(больше 0, не больше {max_qty})",
+                    en=f"Cart lines, 1 to {max_lines}: product id and quantity "
+                    f"(above 0, at most {max_qty})",
                 )
             },
         )

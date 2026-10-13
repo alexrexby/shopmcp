@@ -44,6 +44,7 @@ class AdapterContext:
     data_dir: Path
     http_timeout: float
     store_id: str
+    config_dir: Path = Path(".")  # directory of store.toml: relative paths in it start here
 
 
 @runtime_checkable
@@ -62,7 +63,9 @@ class ShopAdapter(Protocol):
         self, city: str | None, page: int, limit: int
     ) -> tuple[list[PickupPoint], int]: ...
     async def create_share_link(self, lines: Sequence[CartLine]) -> HttpUrl: ...
-    async def orders(self, token: AccessToken, page: int) -> tuple[list[Order], int]: ...
+    async def orders(
+        self, token: AccessToken, page: int, limit: int
+    ) -> tuple[list[Order], int]: ...
 
 
 class AdapterBase:
@@ -109,5 +112,5 @@ class AdapterBase:
     async def create_share_link(self, lines: Sequence[CartLine]) -> HttpUrl:
         raise NotSupported()
 
-    async def orders(self, token: AccessToken, page: int) -> tuple[list[Order], int]:
+    async def orders(self, token: AccessToken, page: int, limit: int) -> tuple[list[Order], int]:
         raise NotSupported()

@@ -49,16 +49,21 @@ def test_all_capabilities_give_the_canonical_ten():
     assert suffixes(cfg(), FakeAdapter()) == ALL
 
 
-def test_search_only_gives_search_cart_and_info():
-    assert suffixes(cfg(), FakeAdapter({Capability.SEARCH})) == {
-        "products_search",
+def test_search_only_gives_search_and_info():
+    # No DETAILS: the cart could not check a single id, so it is not offered at all.
+    assert suffixes(cfg(), FakeAdapter({Capability.SEARCH})) == {"products_search", "store_info"}
+
+
+def test_cart_comes_with_details():
+    assert suffixes(cfg(), FakeAdapter({Capability.DETAILS})) == {
+        "product_details",
         "cart_link_create",
         "store_info",
     }
 
 
-def test_no_capabilities_still_give_cart_and_info():
-    assert suffixes(cfg(), FakeAdapter(())) == {"cart_link_create", "store_info"}
+def test_no_capabilities_still_give_info():
+    assert suffixes(cfg(), FakeAdapter(())) == {"store_info"}
 
 
 def test_disabled_tools_are_dropped():

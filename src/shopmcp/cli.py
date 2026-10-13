@@ -8,6 +8,7 @@ command that needs it.
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -40,7 +41,7 @@ def _serve(args: argparse.Namespace) -> int:
     cfg = load(args.config)
     # proxy_headers=False: the client address is rewritten only by our rate limiter,
     # and only for `server.trusted_proxies`; uvicorn would trust its own list instead.
-    app = build_app(cfg, data_dir=_data_dir())
+    app = build_app(cfg, data_dir=_data_dir(), config_dir=Path(args.config).resolve().parent)
     uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, proxy_headers=False)
     return 0
 
@@ -51,7 +52,12 @@ def _index(args: argparse.Namespace) -> int:
     from shopmcp.server.app import HTTP_TIMEOUT
 
     cfg = load(args.config)
-    ctx = AdapterContext(data_dir=_data_dir(), http_timeout=HTTP_TIMEOUT, store_id=cfg.id)
+    ctx = AdapterContext(
+        data_dir=_data_dir(),
+        http_timeout=HTTP_TIMEOUT,
+        store_id=cfg.id,
+        config_dir=Path(args.config).resolve().parent,
+    )
     adapter = registry.create(cfg.adapter, ctx)
 
     async def build() -> dict:
@@ -66,8 +72,32 @@ def _index(args: argparse.Namespace) -> int:
 
 
 def _check(args: argparse.Namespace) -> int:
-    print("error: conformance checks are not implemented yet (stage 2)", file=sys.stderr)
-    return 2
+    from shopmcp.conformance import runner
+
+    # The report is the output: SDK session INFO lines for every request would drown it.
+    logging.getLogger("mcp").setLevel(logging.WARNING)
+    if not args.config and not args.url:
+        print("error: check needs a store.toml, --url, or both", file=sys.stderr)
+        return 2
+    cfg = load(args.config) if args.config else None
+    if args.url:
+        # With a config the live endpoint is held to it; without one, expectations are inferred.
+        results = runner.check_url(args.url, cfg)
+    else:
+        assert cfg is not None
+        remote = sorted(
+            k for k, v in (cfg.adapter.model_extra or {}).items() if str(v).startswith("https://")
+        )
+        if remote and not args.online:
+            print(
+                f"error: the store reads adapter.{', adapter.'.join(remote)} over the network;"
+                " rerun with --online",
+                file=sys.stderr,
+            )
+            return 2
+        results = runner.check_config(cfg, Path(args.config).resolve().parent)
+    print(runner.report(results))
+    return 1 if any(r.status == "fail" for r in results) else 0
 
 
 def _toml_str(value: str) -> str:
@@ -135,11 +165,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("config", help="path to store.toml")
     p.set_defaults(func=_index)
 
-    p = sub.add_parser("check", help="run the conformance checks")
-    target = p.add_mutually_exclusive_group(required=True)
-    target.add_argument("config", nargs="?", help="path to store.toml (served locally)")
-    target.add_argument("--url", help="URL of a running MCP endpoint")
-    p.add_argument("--online", action="store_true", help="also run checks that hit the network")
+    p = sub.add_parser(
+        "check", help="run the conformance checks (store.toml: served locally; --url: live)"
+    )
+    p.add_argument("config", nargs="?", help="path to store.toml; with --url, the expectations")
+    p.add_argument("--url", help="URL of a running MCP endpoint, e.g. https://shop.ru/mcp")
+    p.add_argument(
+        "--online", action="store_true", help="let a local run fetch the store's https sources"
+    )
     p.set_defaults(func=_check)
 
     p = sub.add_parser("scaffold", help="create stores/<store_id>/store.toml")

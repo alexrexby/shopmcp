@@ -11,6 +11,7 @@ import os
 import sqlite3
 import tempfile
 import time
+import urllib.parse
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
@@ -20,7 +21,7 @@ import anyio.to_thread
 
 from shopmcp.adapters.base import AdapterBase, AdapterContext, SearchQuery
 from shopmcp.adapters.yml import index
-from shopmcp.adapters.yml.feed import FeedError, FeedStats, open_feed, parse
+from shopmcp.adapters.yml.feed import FeedError, FeedStats, open_feed, parse, redact
 from shopmcp.capabilities import Capability
 from shopmcp.config import AdapterConfig, ConfigError
 from shopmcp.domain.models import Category, Facets, Product
@@ -52,6 +53,7 @@ class YmlAdapter(AdapterBase):
         max_feed_mb: int = 200,
     ) -> None:
         self.feed = feed
+        self._label = redact(feed)  # for logs: the URL may carry a secret from ${ENV}
         self.ctx = ctx
         self.refresh_minutes = refresh_minutes
         self.max_bytes = max_feed_mb * 1024 * 1024
@@ -71,9 +73,9 @@ class YmlAdapter(AdapterBase):
         except (FeedError, OSError, sqlite3.Error) as e:
             self._last_error = str(e)
             if not path.exists():
-                log.error("feed %s: first index build failed: %s", self.feed, e)
+                log.error("feed %s: first index build failed: %s", self._label, e)
                 raise Unavailable() from e
-            log.warning("feed %s: rebuild failed, serving the previous index: %s", self.feed, e)
+            log.warning("feed %s: rebuild failed, serving the previous index: %s", self._label, e)
         self.index = index.Index(path)
         if self.refresh_minutes > 0:
             self._refresher = asyncio.create_task(self._refresh_loop(path))
@@ -157,7 +159,7 @@ class YmlAdapter(AdapterBase):
         self._last_error = None
         log.info(
             "feed %s: %d products, %d categories, %d skipped",
-            self.feed,
+            self._label,
             built.products,
             built.categories,
             stats.skipped,
@@ -170,7 +172,7 @@ class YmlAdapter(AdapterBase):
                 await anyio.to_thread.run_sync(self._rebuild, path)
             except (FeedError, OSError, sqlite3.Error) as e:
                 self._last_error = str(e)
-                log.warning("feed %s: refresh failed, keeping the old index: %s", self.feed, e)
+                log.warning("feed %s: refresh failed, keeping the old index: %s", self._label, e)
 
 
 def create(cfg: AdapterConfig, ctx: AdapterContext) -> YmlAdapter:
@@ -181,6 +183,8 @@ def create(cfg: AdapterConfig, ctx: AdapterContext) -> YmlAdapter:
     feed = extra.get("feed")
     if not isinstance(feed, str) or not feed:
         raise ConfigError("adapter.feed is required for kind 'yml'")
+    if not urllib.parse.urlsplit(feed).scheme:  # a path: relative to store.toml, not the CWD
+        feed = str(ctx.config_dir / feed)
     refresh = extra.get("refresh_minutes", 60)
     max_mb = extra.get("max_feed_mb", 200)
     if not isinstance(refresh, int) or isinstance(refresh, bool) or refresh < 0:

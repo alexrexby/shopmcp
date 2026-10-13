@@ -2,6 +2,7 @@
 that turns JSON into `LineIn` is covered in test_app)."""
 
 from decimal import Decimal
+from types import SimpleNamespace as LineIn  # the tool reads only .id and .quantity
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -16,7 +17,6 @@ from shopmcp.config import CartConfig, ConfigError
 from shopmcp.domain.models import CartLine
 from shopmcp.errors import InvalidInput
 from shopmcp.i18n import Texts
-from shopmcp.tools.cart import LineIn
 
 TEMPLATE = CartConfig(
     strategy="url_template",

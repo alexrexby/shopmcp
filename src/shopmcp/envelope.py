@@ -24,6 +24,11 @@ def _dump(payload: BaseModel) -> dict[str, Any]:
     return payload.model_dump(mode="json", exclude_none=True)
 
 
+def size(payload: BaseModel) -> int:
+    """Bytes of the text content `ok(payload)` would produce."""
+    return len(_compact(_dump(payload)).encode())
+
+
 def ok(payload: BaseModel, max_bytes: int | None = None) -> CallToolResult:
     """Success result. Over `max_bytes`, a paged payload (`meta` + `items`) loses items
     from the end and gets `meta.truncated = meta.has_more = True`."""

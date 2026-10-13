@@ -109,7 +109,8 @@ class ProductPage(Model):
 
 class ProductDetails(Model):
     items: list[Product]
-    missing: list[str] = []
+    missing: list[str] = []  # no such product
+    omitted: list[str] = []  # found, but over the response budget: ask for them again
 
 
 class CategoryList(Model):

@@ -8,7 +8,7 @@ key (`ToolSpec.texts()`), in the `[texts]` table of `store.toml`.
 import functools
 import inspect
 from collections.abc import Awaitable, Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Annotated, Any
 
 from mcp.types import CallToolResult, ToolAnnotations
@@ -79,11 +79,6 @@ def page_meta(page: int, limit: int, total: int, q: str | None = None) -> PageMe
     return PageMeta(q=q, page=page, limit=limit, total=total, pages=pages, has_more=page < pages)
 
 
-def scopes(cfg: StoreConfig, suffix: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
-    """Scopes a tool demands: `[auth.tool_scopes]` of the store, else `default`."""
-    return tuple(cfg.auth.tool_scopes.get(suffix, default))
-
-
 def canonical_tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[ToolSpec]:
     """Every tool the framework knows, before filtering. Also the source of the text keys
     a store may override, so `[texts]` stays valid when a tool is disabled."""
@@ -103,11 +98,14 @@ def canonical_tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) 
 
 def build_tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[ToolSpec]:
     """Canonical tool set filtered by `spec.requires <= adapter.capabilities()` and
-    `suffix not in cfg.tools.disabled`."""
+    `suffix not in cfg.tools.disabled`, with `[auth.tool_scopes]` applied.
+
+    This is the one place scopes are resolved: the store's entry overrides the tool's
+    default, and the result feeds both the auth gate and the instructions."""
     caps = adapter.capabilities()
     disabled = set(cfg.tools.disabled)
     return [
-        spec
+        replace(spec, scopes=tuple(cfg.auth.tool_scopes.get(spec.suffix, spec.scopes)))
         for spec in canonical_tools(cfg, adapter, cart)
         if spec.requires <= caps and spec.suffix not in disabled
     ]

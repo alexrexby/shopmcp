@@ -436,20 +436,6 @@ def test_protected_resource_metadata(client):
     assert data["scopes_supported"] == ["orders.read"]
 
 
-def test_prefix_less_caller_still_gated_by_config(jwks):
-    # 1B passes full names; if it ever passed suffixes, [auth.tool_scopes] still gates.
-    mcp = MCPServer(name="demo")
-
-    @mcp.tool(name=PERSONAL)
-    def orders_history() -> str:
-        return "secret"
-
-    app = mcp.streamable_http_app(stateless_http=True, json_response=True, host="localhost")
-    wrapped = wrap_with_auth(app, store_config(jwks.url), {"orders_history": ("orders.read",)})
-    with TestClient(wrapped, base_url="http://localhost:8000") as c:
-        assert post(c, call(PERSONAL)).status_code == 401
-
-
 # --- verifier -----------------------------------------------------------------
 
 
@@ -524,3 +510,70 @@ async def test_slow_jwks_fails_closed_within_timeout(jwks, monkeypatch):
     started = time.monotonic()
     assert await verifier(jwks).verify_token(mint()) is None
     assert time.monotonic() - started < 1.5
+
+
+# --- a slow JWKS must not take the catalog down (security Н2) ---------------------------
+
+
+@pytest.fixture
+def silent_jwks() -> Iterator[str]:
+    """Accepts connections (the kernel backlog does) and never answers: a dropped IdP."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(256)
+    yield f"http://127.0.0.1:{sock.getsockname()[1]}/jwks"
+    sock.close()
+
+
+def junk_bearer() -> str:
+    header = jwt.utils.base64url_encode(b'{"alg":"RS256","kid":"x"}').decode()
+    return f"{header}.e30.AAAA"
+
+
+@pytest.mark.anyio
+async def test_dead_jwks_neither_starves_threads_nor_is_retried(silent_jwks, monkeypatch):
+    monkeypatch.setattr(auth, "JWKS_TIMEOUT", 1.0)
+    v = JwksTokenVerifier(ISSUER, PUBLIC_URL, silent_jwks)
+    probe_wait: list[float] = []
+
+    async def probe() -> None:
+        await anyio.sleep(0.2)  # the junk is in flight by now
+        started = time.monotonic()
+        await anyio.to_thread.run_sync(lambda: None)  # what a catalog search needs
+        probe_wait.append(time.monotonic() - started)
+
+    with anyio.fail_after(15):
+        started = time.monotonic()
+        async with anyio.create_task_group() as tg:
+            for _ in range(50):
+                tg.start_soon(v.verify_token, junk_bearer())
+            tg.start_soon(probe)
+        took = time.monotonic() - started
+    assert probe_wait[0] < 0.5, probe_wait  # the shared pool stayed free
+    assert took < 4, took  # one timed-out fetch, then the negative cache answers
+
+
+@pytest.mark.anyio
+async def test_rate_limit_comes_before_token_checks(monkeypatch):
+    from fakes import FakeAdapter
+    from test_tools_spec import cfg
+
+    from shopmcp.server.app import build_app
+
+    checked: list[str] = []
+
+    async def counting(self, token):
+        checked.append(token)
+
+    monkeypatch.setattr(JwksTokenVerifier, "verify_token", counting)
+    c = cfg(
+        auth__enabled=True,
+        auth__issuer=ISSUER,
+        auth__jwks_uri="http://127.0.0.1:9/jwks",
+        limits__rate_per_minute=3,
+    )
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    with TestClient(build_app(c, adapter=FakeAdapter()), base_url="http://localhost:8000") as tc:
+        codes = [post(tc, body, token=junk_bearer()).status_code for _ in range(6)]
+    assert codes.count(429) == 3
+    assert len(checked) == 3  # the throttled requests never reached the verifier

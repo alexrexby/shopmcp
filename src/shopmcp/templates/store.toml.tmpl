@@ -19,7 +19,7 @@ instructions = """"""
 
 [adapter]
 kind = "yml"
-feed = $feed                        # path or https URL / путь или https-URL
+feed = $feed                        # https URL or path from this file / https-URL или путь от этого файла
 refresh_minutes = 60
 
 [cart]
@@ -33,6 +33,7 @@ strategy = "link_list"
 [limits]
 max_page_size = 20
 max_cart_lines = 30
+max_quantity = 99                   # per cart line / на одну позицию корзины
 max_response_bytes = 24000
 rate_per_minute = 60
 

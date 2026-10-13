@@ -11,7 +11,7 @@ regions = ["Москва", "Московская область"]
 
 [adapter]
 kind = "yml"
-feed = "stores/demo/feed.xml"     # path or https URL; ${ENV} is substituted
+feed = "feed.xml"                 # https URL, or a path relative to this file; ${ENV} is substituted
 refresh_minutes = 60
 
 [cart]
@@ -23,6 +23,7 @@ item_separator = "&"
 [limits]
 max_page_size = 20
 max_cart_lines = 30
+max_quantity = 99
 max_response_bytes = 24000
 rate_per_minute = 60
 

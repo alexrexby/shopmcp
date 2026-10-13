@@ -8,6 +8,8 @@ come from the store's authorization server and are checked here against its JWKS
 import json
 import logging
 import re
+import threading
+import time
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -36,6 +38,8 @@ ASYMMETRIC_ALGORITHMS = frozenset(
 JWKS_TIMEOUT = 5.0  # seconds per JWKS fetch; verification fails closed on timeout
 JWKS_LIFESPAN = 300.0  # seconds the fetched key set is trusted
 JWKS_COOLDOWN = 30.0  # min seconds between refetches forced by an unknown kid
+JWKS_DOWN_BACKOFF = 10.0  # seconds a failed JWKS fetch is not retried: tokens just fail
+VERIFY_THREADS = 4  # worker threads token checks may hold; the catalog keeps the rest
 MAX_BODY = 256 * 1024  # bytes; the gate must see the whole body before the SDK does
 
 # RFC 6749 scope-token: no space, quote or backslash, so it is safe inside a quoted header.
@@ -67,12 +71,19 @@ class JwksTokenVerifier(TokenVerifier):
         self._jwks = jwt.PyJWKClient(
             jwks_uri, lifespan=JWKS_LIFESPAN, timeout=JWKS_TIMEOUT, cooldown_duration=JWKS_COOLDOWN
         )
+        # A slow or dead JWKS must not take the shared thread pool (the catalog searches run
+        # there) nor be hit again by every junk Bearer: own small limiter + a negative cache.
+        self._limiter: anyio.CapacityLimiter | None = None  # needs a running event loop
+        self._jwks_down_until = 0.0
+        self._jwks_lock = threading.Lock()
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """Signature by JWKS (cached PyJWKClient, called via anyio.to_thread), iss,
         aud == resource url, exp/nbf; scopes from "scope" (str) or "scp" (list)."""
+        if self._limiter is None:
+            self._limiter = anyio.CapacityLimiter(VERIFY_THREADS)
         try:
-            return await anyio.to_thread.run_sync(self._verify, token)
+            return await anyio.to_thread.run_sync(self._verify, token, limiter=self._limiter)
         # Any failure means "not authenticated": an exception here would turn a stray bad
         # token on a public tool into a 500 from AuthenticationMiddleware.
         except Exception as e:  # noqa: BLE001
@@ -83,7 +94,16 @@ class JwksTokenVerifier(TokenVerifier):
         # Checked before the key lookup, so alg=none or HS256 never costs a JWKS fetch.
         if jwt.get_unverified_header(token).get("alg") not in self.algorithms:
             raise jwt.InvalidAlgorithmError("alg is not allowed")
-        key = self._jwks.get_signing_key_from_jwt(token)
+        # Checked under the lock: threads queued behind a failing fetch must see its failure
+        # instead of each fetching again (PyJWKClient serializes lookups anyway).
+        with self._jwks_lock:
+            if time.monotonic() < self._jwks_down_until:
+                raise jwt.PyJWKClientConnectionError("JWKS unreachable a moment ago, not retried")
+            try:
+                key = self._jwks.get_signing_key_from_jwt(token)
+            except jwt.PyJWKClientConnectionError:
+                self._jwks_down_until = time.monotonic() + JWKS_DOWN_BACKOFF
+                raise
         claims = jwt.decode(
             token,
             key,
@@ -302,12 +322,10 @@ def wrap_with_auth(
     """AuthenticationMiddleware(BearerAuthBackend(verifier)) -> AuthContextMiddleware ->
     ToolScopeGate -> app, plus the RFC 9728 route from create_protected_resource_routes.
 
-    `tool_scopes` is keyed by full tool name. `[auth.tool_scopes]` of the config is merged
-    in under `<prefix>_<suffix>`: gating a name that is not registered costs nothing, while
-    a caller that forgot the prefix would otherwise leave a personal tool open."""
+    `tool_scopes` is keyed by full tool name and is the only source: `build_tools` has
+    already applied `[auth.tool_scopes]` of the config to the tools' defaults."""
     resource_url = str(cfg.server.public_url)
-    scopes = {f"{cfg.prefix}_{suffix}": tuple(v) for suffix, v in cfg.auth.tool_scopes.items()}
-    scopes |= {name: tuple(v) for name, v in tool_scopes.items()}
+    scopes = {name: tuple(v) for name, v in tool_scopes.items()}
     metadata_url = build_resource_metadata_url(AnyHttpUrl(resource_url))
 
     verifier = JwksTokenVerifier(cfg.auth.issuer, resource_url, cfg.auth.jwks_uri)

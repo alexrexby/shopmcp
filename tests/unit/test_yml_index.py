@@ -14,7 +14,8 @@ from shopmcp.adapters import registry
 from shopmcp.adapters.base import AdapterContext, SearchQuery, ShopAdapter
 from shopmcp.adapters.yml import index
 from shopmcp.adapters.yml.adapter import CAPABILITIES, YmlAdapter, create
-from shopmcp.adapters.yml.feed import FeedStats, open_feed, parse
+from shopmcp.adapters.yml.feed import FeedStats, open_feed, parse, redact
+from shopmcp.adapters.yml.stem import variants
 from shopmcp.capabilities import Capability
 from shopmcp.config import AdapterConfig, ConfigError
 from shopmcp.errors import Unavailable
@@ -95,11 +96,24 @@ async def test_search_finds_word_forms(adapter):
 
 
 @pytest.mark.anyio
-async def test_search_tvorozhny_does_not_reach_tvorog(adapter):
-    # Actual behavior, pinned: snowball stems творожный -> творожн and творог -> творог,
-    # so the adjective finds only the "творожная" product, not "Творог 9%".
-    assert await ids(adapter, q="творожный") == ["10"]
-    assert {"8", "9"} <= set(await ids(adapter, q="творог"))
+async def test_search_adjective_reaches_its_noun(adapter):
+    # Snowball stems творожный -> творожн and творог -> творог; the query expansion
+    # (творожн | творож | творог) bridges them. It used to find only "творожная" (id 10).
+    assert {"8", "9", "10"} <= set(await ids(adapter, q="творожный"))
+    assert {"1", "2", "3"} <= set(await ids(adapter, q="молочный"))  # молочн -> молок
+
+
+@pytest.mark.anyio
+async def test_search_expansion_keeps_noun_queries_exact(adapter):
+    # Precision control: before the expansion "молоко" gave exactly these, in this order.
+    assert await ids(adapter, q="молоко") == ["3", "2", "1", "6", "7", "4", "5"]
+
+
+def test_variants_only_for_relative_adjectives():
+    assert variants("творожн") == ["творожн", "творож", "творог", "твороз"]
+    assert variants("орехов") == ["орехов", "орех"]
+    assert variants("молок") == ["молок"]  # noun
+    assert variants("лимон") == ["лимон"]  # -н after a vowel: a noun, not an adjective
 
 
 @pytest.mark.anyio
@@ -260,3 +274,26 @@ async def test_close_stops_the_refresher(tmp_path):
     assert task is not None and not task.done()
     await a.close()
     assert task.cancelled() and a._refresher is None
+
+
+@pytest.mark.anyio
+async def test_feed_secret_never_reaches_the_log(tmp_path, caplog):
+    # Security Н1: `feed = "https://...?key=${FEED_KEY}"` must not print the key.
+    feed = "https://user:pw@127.0.0.1:9/export/yml.php?key=S3CRET#frag"
+    a = YmlAdapter(feed, ctx(tmp_path), refresh_minutes=0)
+    with caplog.at_level("DEBUG"), pytest.raises(Unavailable):
+        await a.start()
+    assert "127.0.0.1:9/export/yml.php" in caplog.text
+    assert "S3CRET" not in caplog.text and "pw" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "source, shown",
+    [
+        ("https://shop.ru/yml.php?key=x", "https://shop.ru/yml.php"),
+        ("https://u:p@[::1]:8443/f.xml", "https://[::1]:8443/f.xml"),
+        ("stores/demo/feed.xml", "stores/demo/feed.xml"),
+    ],
+)
+def test_redact(source, shown):
+    assert redact(source) == shown

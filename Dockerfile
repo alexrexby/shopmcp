@@ -27,6 +27,7 @@ VOLUME /data
 USER 10001
 
 EXPOSE 8000
+# The probe reads server.port from the same config the server runs with.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"]
+    CMD ["python", "-c", "import urllib.request; from shopmcp.config import load; port = load('/app/store/store.toml').server.port; urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=4)"]
 CMD ["shopmcp", "serve", "/app/store/store.toml"]

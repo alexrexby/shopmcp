@@ -90,15 +90,16 @@ def test_scaffold_bad_site_is_an_error(workdir, capsys):
 # --- check (stage 2) ------------------------------------------------------------
 
 
-def test_check_is_a_clear_stub(capsys):
-    assert cli.main(["check", "stores/demo/store.toml"]) == 2
-    assert "stage 2" in capsys.readouterr().err
-    assert cli.main(["check", "--url", "http://localhost:8000/mcp", "--online"]) == 2
+def test_check_needs_a_target(capsys):
+    assert cli.main(["check"]) == 2
+    assert "store.toml, --url" in capsys.readouterr().err
 
 
-def test_check_needs_a_target():
-    with pytest.raises(SystemExit):
-        cli.main(["check"])
+def test_check_of_a_remote_feed_needs_online(workdir, capsys):
+    path = workdir / "store.toml"
+    path.write_text(cli.render_store_toml("cli-test", feed=FEED, site=SITE), "utf-8")
+    assert cli.main(["check", str(path)]) == 2
+    assert "--online" in capsys.readouterr().err
 
 
 # --- stub adapters ----------------------------------------------------------------
@@ -144,7 +145,7 @@ def _free_port() -> int:
 
 
 @pytest.mark.parametrize("kind", STUB_KINDS)
-def test_stub_store_serves_only_the_always_present_tools(workdir, kind):
+def test_stub_store_serves_only_store_info(workdir, kind):
     import uvicorn
 
     from shopmcp.server.app import build_app
@@ -177,7 +178,7 @@ def test_stub_store_serves_only_the_always_present_tools(workdir, kind):
         )
         with urllib.request.urlopen(req, timeout=5) as r:
             tools = {t["name"] for t in json.loads(r.read())["result"]["tools"]}
-        assert tools == {"pp_cart_link_create", "pp_store_info"}
+        assert tools == {"pp_store_info"}  # no DETAILS, so no cart that could never work
     finally:
         server.should_exit = True
         thread.join(timeout=5)

@@ -12,6 +12,7 @@ import pytest
 from fakes import FakeAdapter, make_product
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
+from pydantic import ValidationError
 from starlette.types import ASGIApp
 from test_tools_spec import ALL, cfg
 
@@ -62,10 +63,48 @@ def error_of(res: Any) -> dict[str, Any]:
 
 
 @pytest.mark.anyio
-async def test_search_only_adapter_lists_three_tools():
+async def test_search_only_adapter_lists_two_tools():
     async with connect(cfg(), FakeAdapter({Capability.SEARCH})) as client:
         names = {t.name for t in (await client.list_tools()).tools}
-    assert names == {"demo_products_search", "demo_cart_link_create", "demo_store_info"}
+    assert names == {"demo_products_search", "demo_store_info"}
+
+
+@pytest.mark.anyio
+async def test_details_with_no_id_found_is_not_found():
+    async with connect(cfg(), FakeAdapter()) as client:
+        none = await client.call_tool("demo_product_details", {"ids": ["__nope__"]})
+        some = await client.call_tool("demo_product_details", {"ids": ["1", "__nope__"]})
+    err = error_of(none)
+    assert err["code"] == "not_found" and err["details"] == {"missing": ["__nope__"]}
+    assert not some.is_error and some.structured_content["missing"] == ["__nope__"]
+
+
+@pytest.mark.anyio
+async def test_details_over_budget_lists_omitted_ids():
+    long = "Очень подробное описание товара. " * 40
+    products = [make_product(str(i), f"Товар {i}", description=long) for i in range(20)]
+    ids = [str(i) for i in range(20)]
+    c = cfg(limits__max_response_bytes=4096)
+    async with connect(c, FakeAdapter(products=products)) as client:
+        res = await client.call_tool("demo_product_details", {"ids": ids})
+    assert not res.is_error and len(res.content[0].text.encode()) <= 4096
+    shown = [p["id"] for p in res.structured_content["items"]]
+    assert shown and shown + res.structured_content["omitted"] == ids
+
+
+@pytest.mark.anyio
+async def test_cart_quantity_is_capped_by_config():
+    async with connect(cfg(limits__max_quantity=5), FakeAdapter()) as client:
+        tool = {t.name: t for t in (await client.list_tools()).tools}["demo_cart_link_create"]
+        res = await client.call_tool(
+            "demo_cart_link_create", {"lines": [{"id": "1", "quantity": 6}]}
+        )
+    line = tool.input_schema["$defs"]["LineIn"]["properties"]["quantity"]
+    assert (
+        line["maximum"] == 5
+        and "не больше 5" in tool.input_schema["properties"]["lines"]["description"]
+    )
+    assert res.is_error
 
 
 @pytest.mark.anyio
@@ -201,12 +240,16 @@ async def test_healthz_and_adapter_lifecycle():
 
 
 @pytest.mark.anyio
-async def test_get_on_mcp_path_is_not_a_server_error():
-    # With `accept: text/event-stream` SDK 2.3.0 opens a standalone SSE stream even in
-    # stateless mode (no 405): that case is left to the stage-2 conformance check C12.
+@pytest.mark.parametrize("accept", ["text/event-stream", "application/json", None])
+async def test_get_on_mcp_path_is_405_at_once(accept):
+    # SDK 2.3.0 opens a never-ending SSE stream on GET even in stateless mode; without
+    # the PostOnly gate this request hangs and fail_after turns that into a failure.
+    headers = {"accept": accept} if accept else {}
     async with serve(build_app(cfg(), adapter=FakeAdapter())) as http:
-        res = await http.get("/mcp", headers={"accept": "application/json"})
-    assert res.status_code == 406
+        with anyio.fail_after(3):
+            res = await http.get("/mcp", headers=headers)
+    assert res.status_code == 405 and res.headers["allow"] == "POST"
+    assert res.json()["error"]["code"] == -32000
 
 
 @pytest.mark.anyio
@@ -257,3 +300,116 @@ def test_client_ip_trusts_only_configured_proxies(peer, forwarded, trusted, want
     headers = [(b"x-forwarded-for", forwarded.encode())] if forwarded else []
     limit = RateLimit(lambda *a: None, rate_per_minute=60, trusted_proxies=trusted)
     assert limit.client_ip({"type": "http", "client": (peer, 1), "headers": headers}) == want
+
+
+# --- auth: one source of scopes -----------------------------------------------------
+
+
+def auth_cfg(**changes: object) -> StoreConfig:
+    # No token is ever sent here, so the JWKS is never fetched.
+    return cfg(
+        auth__enabled=True,
+        auth__issuer="https://id.demo.example",
+        auth__jwks_uri="http://127.0.0.1:9/jwks",
+        **changes,
+    )
+
+
+async def call_raw(http: httpx2.AsyncClient, name: str) -> httpx2.Response:
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name}}
+    headers = {"accept": "application/json, text/event-stream"}
+    return await http.post("/mcp", json=body, headers=headers)
+
+
+@pytest.mark.anyio
+async def test_personal_tool_is_gated_with_default_scope():
+    async with serve(build_app(auth_cfg(auth__tool_scopes={}), adapter=FakeAdapter())) as http:
+        personal = await call_raw(http, "demo_orders_history")
+        public = await call_raw(http, "demo_store_info")
+    assert personal.status_code == 401
+    assert 'scope="orders.read"' in personal.headers["www-authenticate"]
+    assert public.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_config_scope_overrides_the_default_everywhere():
+    c = auth_cfg(auth__tool_scopes={"orders_history": ["orders.mine"]})
+    app = build_app(c, adapter=FakeAdapter())
+    async with serve(app) as http:
+        res = await call_raw(http, "demo_orders_history")
+        prm = await http.get("/.well-known/oauth-protected-resource/mcp")
+    assert 'scope="orders.mine"' in res.headers["www-authenticate"]
+    assert prm.json()["scopes_supported"] == ["orders.mine"]
+
+
+def test_personal_tool_without_scope_is_impossible():
+    with pytest.raises(ValidationError, match="tool_scopes"):
+        auth_cfg(auth__tool_scopes={"orders_history": []})
+
+
+def test_unknown_tool_in_tool_scopes_fails_the_start():
+    with pytest.raises(ConfigError, match="orders_histroy"):
+        build_app(auth_cfg(auth__tool_scopes={"orders_histroy": ["x"]}), adapter=FakeAdapter())
+
+
+# --- rate limit keys (security Н3) ------------------------------------------------------
+
+
+async def _hit(limit: RateLimit, ip: str) -> int:
+    status = 0
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    async def send(message):
+        nonlocal status
+        if message["type"] == "http.response.start":
+            status = message["status"]
+
+    limit.app = app
+    scope = {"type": "http", "path": "/mcp", "client": (ip, 1), "headers": []}
+    await limit(scope, None, send)
+    return status
+
+
+@pytest.mark.anyio
+async def test_ipv6_rotation_inside_a_64_shares_one_bucket():
+    limit = RateLimit(None, rate_per_minute=60, clock=lambda: 0.0)
+    codes = [await _hit(limit, f"2001:db8::{i:x}") for i in range(1, 101)]
+    assert codes.count(429) == 40  # 100 addresses of one /64, 60 allowed
+    assert await _hit(limit, "2001:db8:0:1::1") == 200  # the next /64 is someone else
+
+
+@pytest.mark.anyio
+async def test_ipv4_mapped_counts_as_its_ipv4():
+    limit = RateLimit(None, rate_per_minute=1, clock=lambda: 0.0)
+    assert await _hit(limit, "203.0.113.5") == 200
+    assert await _hit(limit, "::ffff:203.0.113.5") == 429
+
+
+@pytest.mark.anyio
+async def test_subscriptions_listen_does_not_open_a_stream():
+    # Protocol 2026-07-28 opens an endless SSE stream over POST too; nothing is published
+    # here, so the method is off. Without that, fail_after turns the hang into a failure.
+    body = {
+        "jsonrpc": "2.0",
+        "id": "listen-1",
+        "method": "subscriptions/listen",
+        "params": {
+            "notifications": {"toolsListChanged": True},
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
+        },
+    }
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "mcp-protocol-version": "2026-07-28",
+        "mcp-method": "subscriptions/listen",
+    }
+    async with serve(build_app(cfg(), adapter=FakeAdapter())) as http:
+        with anyio.fail_after(3):
+            res = await http.post("/mcp", json=body, headers=headers)
+    assert "event-stream" not in res.headers.get("content-type", "")
+    assert res.json()["error"]["code"] == -32601

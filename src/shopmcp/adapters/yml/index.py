@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from shopmcp.adapters.base import SearchQuery
-from shopmcp.adapters.yml.stem import stem_text, stems
+from shopmcp.adapters.yml.stem import stem_text, stems, variants
 from shopmcp.domain.models import Category, Facets, FacetValue, Product
 
 _SCHEMA = """
@@ -150,10 +150,15 @@ def _count_categories(db: sqlite3.Connection) -> int:
     return len(parents)
 
 
-def _match(text: str, op: str) -> str:
-    """Stems as quoted prefix terms: quoting keeps FTS5 syntax out of user input."""
+def _match(text: str, op: str, expand: bool = False) -> str:
+    """Stems as quoted prefix terms: quoting keeps FTS5 syntax out of user input.
+
+    `expand` lets a word match any of its `variants()` (творожный finds творог)."""
     terms = dict.fromkeys(stems(text))  # unique, order kept
-    return f" {op} ".join(f'"{t}"*' for t in terms)
+    if not expand:
+        return f" {op} ".join(f'"{t}"*' for t in terms)
+    groups = (" OR ".join(f'"{v}"*' for v in variants(t)) for t in terms)
+    return f" {op} ".join(f"({g})" for g in groups)
 
 
 class Index:
@@ -183,9 +188,9 @@ class Index:
                 return self._page(db, None, filters, args, q)
             if not stems(q.q):  # punctuation only: nothing to look for
                 return [], 0, Facets()
-            found = self._page(db, _match(q.q, "AND"), filters, args, q)
+            found = self._page(db, _match(q.q, "AND", expand=True), filters, args, q)
             if found[1] == 0:  # every word is too strict: retry with any word
-                found = self._page(db, _match(q.q, "OR"), filters, args, q)
+                found = self._page(db, _match(q.q, "OR", expand=True), filters, args, q)
             return found
 
     def _page(

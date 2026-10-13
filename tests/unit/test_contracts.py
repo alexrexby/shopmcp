@@ -102,7 +102,7 @@ def test_clean_text(raw, clean):
 def test_demo_config_is_valid():
     cfg = load(DEMO)
     assert (cfg.prefix, cfg.locale, cfg.cart.strategy) == ("demo", "ru", "url_template")
-    assert cfg.adapter.kind == "yml" and cfg.adapter.model_extra["feed"] == "stores/demo/feed.xml"
+    assert cfg.adapter.kind == "yml" and cfg.adapter.model_extra["feed"] == "feed.xml"
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -133,14 +133,14 @@ def test_locale_defaults_to_ru(tmp_path):
 
 def test_env_substitution(tmp_path, monkeypatch):
     monkeypatch.setenv("DEMO_FEED", "https://demo.example/feed.xml")
-    cfg = load(_write(tmp_path, _variant('"stores/demo/feed.xml"', '"${DEMO_FEED}"')))
+    cfg = load(_write(tmp_path, _variant('"feed.xml"', '"${DEMO_FEED}"')))
     assert cfg.adapter.model_extra["feed"] == "https://demo.example/feed.xml"
 
 
 def test_missing_env_is_an_error(tmp_path, monkeypatch):
     monkeypatch.delenv("DEMO_FEED", raising=False)
     with pytest.raises(ConfigError, match="DEMO_FEED"):
-        load(_write(tmp_path, _variant('"stores/demo/feed.xml"', '"${DEMO_FEED}"')))
+        load(_write(tmp_path, _variant('"feed.xml"', '"${DEMO_FEED}"')))
 
 
 def test_config_error_does_not_echo_secret(tmp_path, monkeypatch):
