@@ -1,0 +1,399 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<yml_catalog date="2026-10-13T09:00:00+03:00">
+  <shop>
+    <name>Демо-маркет</name>
+    <company>ООО «Демо-маркет» (вымышленный магазин)</company>
+    <url>https://demo.example</url>
+    <currencies><currency id="RUR" rate="1"/></currencies>
+    <categories>
+      <category id="1">Молочные продукты</category>
+      <category id="11" parentId="1">Молоко и сливки</category>
+      <category id="12" parentId="1">Творог и сыры</category>
+      <category id="2">Бакалея</category>
+      <category id="21" parentId="2">Крупы и макароны</category>
+      <category id="3">Овощи и фрукты</category>
+    </categories>
+    <offers>
+      <offer id="1" available="true">
+        <url>https://demo.example/p/1</url>
+        <price>89.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>11</categoryId>
+        <picture>https://demo.example/img/1.jpg</picture>
+        <name>Молоко 3,2%, 0,9 л</name>
+        <vendor>Луговая ферма</vendor>
+        <barcode>4600000000017</barcode>
+        <description>Пастеризованное молоко из фермерского хозяйства.</description>
+        <param name="Жирность" unit="%">3,2</param>
+        <param name="Объём" unit="л">0,9</param>
+      </offer>
+      <offer id="2" available="true">
+        <url>https://demo.example/p/2</url>
+        <price>79.90</price>
+        <oldprice>99.90</oldprice>
+        <currencyId>RUR</currencyId>
+        <categoryId>11</categoryId>
+        <picture>https://demo.example/img/2.jpg</picture>
+        <name>Молоко ультрапастеризованное 2,5%, 1 л</name>
+        <vendor>Луговая ферма</vendor>
+        <description><![CDATA[<p>Хранится до&nbsp;6 месяцев<br>без холодильника.</p>]]></description>
+        <param name="Жирность" unit="%">2,5</param>
+      </offer>
+      <offer id="3" available="true">
+        <url>https://demo.example/p/3</url>
+        <price>95</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>11</categoryId>
+        <picture>https://demo.example/img/3.jpg</picture>
+        <name>Молоко топлёное 4%, 0,5 л</name>
+        <vendor>Тихая заводь</vendor>
+        <description>Томлёное молоко с карамельным вкусом.</description>
+      </offer>
+      <offer id="4" available="true">
+        <url>https://demo.example/p/4</url>
+        <price>69.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>11</categoryId>
+        <picture>https://demo.example/img/4.jpg</picture>
+        <name>Сливки 10%, 200 мл</name>
+        <vendor>Луговая ферма</vendor>
+        <param name="Жирность" unit="%">10</param>
+      </offer>
+      <offer id="5" available="true">
+        <url>https://demo.example/p/5</url>
+        <price>59.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>11</categoryId>
+        <picture>https://demo.example/img/5.jpg</picture>
+        <name>Коктейль молочный клубничный, 300 мл</name>
+        <vendor>Тихая заводь</vendor>
+        <description><![CDATA[<ul><li>Без&nbsp;консервантов</li><li>С&nbsp;натуральной клубникой</li></ul>]]></description>
+      </offer>
+      <offer id="6" available="false">
+        <url>https://demo.example/p/6</url>
+        <price>64.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>11</categoryId>
+        <picture>https://demo.example/img/6.jpg</picture>
+        <name>Кефир 1%, 900 г</name>
+        <vendor>Луговая ферма</vendor>
+        <description>Кефир из цельного молока.</description>
+      </offer>
+      <offer id="7" available="true">
+        <url>https://demo.example/p/7</url>
+        <price>72</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>11</categoryId>
+        <picture>https://demo.example/img/7.jpg</picture>
+        <name>Ряженка 4%, 500 г</name>
+        <vendor>Тихая заводь</vendor>
+      </offer>
+      <offer id="8" available="true">
+        <url>https://demo.example/p/8</url>
+        <price>129.90</price>
+        <oldprice>159.90</oldprice>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/8.jpg</picture>
+        <name>Творог 9%, 200 г</name>
+        <vendor>Луговая ферма</vendor>
+        <barcode>4600000000022</barcode>
+        <description><![CDATA[<p><b>Творог</b> рассыпчатый, &laquo;домашний&raquo;.</p>]]></description>
+        <param name="Вес" unit="г">200</param>
+      </offer>
+      <offer id="9" available="true">
+        <url>https://demo.example/p/9</url>
+        <price>109</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/9.jpg</picture>
+        <name>Творог обезжиренный 0%, 180 г</name>
+        <vendor>Тихая заводь</vendor>
+      </offer>
+      <offer id="10" available="true">
+        <url>https://demo.example/p/10</url>
+        <price>89.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/10.jpg</picture>
+        <name>Масса творожная с изюмом, 250 г</name>
+        <vendor>Тихая заводь</vendor>
+      </offer>
+      <offer id="11" available="true">
+        <url>https://demo.example/p/11</url>
+        <price>39.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/11.jpg</picture>
+        <name>Сырок глазированный&amp;nbsp;ванильный, 40 г</name>
+        <vendor>Тихая заводь</vendor>
+        <description><![CDATA[Сырок в&nbsp;шоколадной глазури.]]></description>
+      </offer>
+      <offer id="12" available="true">
+        <url>https://demo.example/p/12</url>
+        <price>289</price>
+        <oldprice>289</oldprice>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/12.jpg</picture>
+        <name>Сыр «Российский» 50%, 200 г</name>
+        <vendor>Северная нива</vendor>
+      </offer>
+      <offer id="13" available="false">
+        <url>https://demo.example/p/13</url>
+        <price>99</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/13.jpg</picture>
+        <name>Сыр плавленый сливочный, 90 г</name>
+        <vendor>Северная нива</vendor>
+      </offer>
+      <offer id="14" available="true" type="vendor.model">
+        <url>https://demo.example/p/14</url>
+        <price>349</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/14.jpg</picture>
+        <typePrefix>Сыр</typePrefix>
+        <vendor>Северная нива</vendor>
+        <model>Гауда 45%, 250 г</model>
+        <barcode>4600000000039</barcode>
+        <description>Полутвёрдый сыр.</description>
+        <param name="Вес" unit="г">250</param>
+      </offer>
+      <offer id="15" available="true">
+        <url>https://demo.example/p/15</url>
+        <price>54.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://demo.example/img/15.jpg</picture>
+        <name>Йогурт питьевой с мёдом, 270 г</name>
+        <vendor>Тихая заводь</vendor>
+      </offer>
+      <offer id="16" available="true">
+        <url>https://demo.example/p/16</url>
+        <price>84.90</price>
+        <oldprice>94.90</oldprice>
+        <currencyId>RUR</currencyId>
+        <categoryId>1</categoryId>
+        <picture>https://demo.example/img/16.jpg</picture>
+        <name>Сметана 20%, 300 г</name>
+        <vendor>Луговая ферма</vendor>
+      </offer>
+      <offer id="17" available="true">
+        <url>https://demo.example/p/17</url>
+        <price>119</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>21</categoryId>
+        <picture>https://demo.example/img/17.jpg</picture>
+        <name>Гречка ядрица, 900 г</name>
+        <vendor>Золотое поле</vendor>
+        <barcode>4600000000046</barcode>
+        <description><![CDATA[<p>Крупа гречневая&nbsp;ядрица<br/>первого сорта.</p>]]></description>
+        <param name="Вес" unit="г">900</param>
+      </offer>
+      <offer id="18" available="true">
+        <url>https://demo.example/p/18</url>
+        <price>99.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>21</categoryId>
+        <picture>https://demo.example/img/18.jpg</picture>
+        <name>Рис круглозёрный, 800 г</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="19" available="true">
+        <url>https://demo.example/p/19</url>
+        <price>74.90</price>
+        <oldprice>89.90</oldprice>
+        <currencyId>RUR</currencyId>
+        <categoryId>21</categoryId>
+        <picture>https://demo.example/img/19.jpg</picture>
+        <name>Макароны «Перья», 450 г</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="20" available="true">
+        <url>https://demo.example/p/20</url>
+        <price>79.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>21</categoryId>
+        <picture>https://demo.example/img/20.jpg</picture>
+        <name>Спагетти, 500 г</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="21" available="true">
+        <url>https://demo.example/p/21</url>
+        <price>69.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>21</categoryId>
+        <picture>https://demo.example/img/21.jpg</picture>
+        <name>Хлопья овсяные, 500 г</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="22" available="true">
+        <url>https://demo.example/p/22</url>
+        <price>55</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>21</categoryId>
+        <picture>https://demo.example/img/22.jpg</picture>
+        <name>Пшено шлифованное, 800 г</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="23" available="true">
+        <url>https://demo.example/p/23</url>
+        <price>89.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>2</categoryId>
+        <picture>https://demo.example/img/23.jpg</picture>
+        <name>Сахар-песок, 1 кг</name>
+        <vendor>Золотое поле</vendor>
+        <barcode>4600000000053</barcode>
+      </offer>
+      <offer id="24" available="true">
+        <url>https://demo.example/p/24</url>
+        <price>25</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>2</categoryId>
+        <picture>https://demo.example/img/24.jpg</picture>
+        <name>Соль поваренная, 1 кг</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="25" available="true">
+        <url>https://demo.example/p/25</url>
+        <price>79.90</price>
+        <oldprice>92.90</oldprice>
+        <currencyId>RUR</currencyId>
+        <categoryId>2</categoryId>
+        <picture>https://demo.example/img/25.jpg</picture>
+        <name>Мука пшеничная &lt;b&gt;высший сорт&lt;/b&gt;, 2 кг</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="26" available="true">
+        <url>https://demo.example/p/26</url>
+        <price>139.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>2</categoryId>
+        <picture>https://demo.example/img/26.jpg</picture>
+        <name>Масло подсолнечное рафинированное, 1 л</name>
+        <vendor>Золотое поле</vendor>
+      </offer>
+      <offer id="27" available="true">
+        <url>https://demo.example/p/27</url>
+        <price>299</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>2</categoryId>
+        <picture>https://demo.example/img/27.jpg</picture>
+        <name>Мёд цветочный, 250 г</name>
+        <vendor>Пасека у реки</vendor>
+        <barcode>4600000000060</barcode>
+        <description>Натуральный мёд.</description>
+      </offer>
+      <offer id="28" available="false">
+        <url>https://demo.example/p/28</url>
+        <price>189</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>2</categoryId>
+        <picture>https://demo.example/img/28.jpg</picture>
+        <name>Чай чёрный листовой, 100 г</name>
+        <vendor>Пасека у реки</vendor>
+      </offer>
+      <offer id="29" available="true">
+        <url>https://demo.example/p/29</url>
+        <price>129.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/29.jpg</picture>
+        <name>Яблоки «Антоновка», 1 кг</name>
+        <param name="Страна">Россия</param>
+      </offer>
+      <offer id="30" available="true">
+        <url>https://demo.example/p/30</url>
+        <price>119.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/30.jpg</picture>
+        <name>Бананы, 1 кг</name>
+      </offer>
+      <offer id="31" available="true">
+        <url>https://demo.example/p/31</url>
+        <price>49.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/31.jpg</picture>
+        <name>Картофель молодой, 1 кг</name>
+      </offer>
+      <offer id="32" available="true">
+        <url>https://demo.example/p/32</url>
+        <price>39.90</price>
+        <oldprice>59.90</oldprice>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/32.jpg</picture>
+        <name>Морковь мытая, 1 кг</name>
+        <barcode>4600000000077</barcode>
+      </offer>
+      <offer id="33" available="true">
+        <url>https://demo.example/p/33</url>
+        <price>149</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/33.jpg</picture>
+        <name>Огурцы среднеплодные, 1 кг</name>
+      </offer>
+      <offer id="34" available="true">
+        <url>https://demo.example/p/34</url>
+        <price>229</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/34.jpg</picture>
+        <name>Томаты черри, 250 г</name>
+      </offer>
+      <offer id="35" available="true">
+        <url>https://demo.example/p/35</url>
+        <price>159.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/35.jpg</picture>
+        <name>Лимоны, 1 кг</name>
+      </offer>
+      <offer id="36" available="true">
+        <url>https://demo.example/p/36</url>
+        <price>35</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/36.jpg</picture>
+        <name>Капуста белокочанная, 1 кг</name>
+      </offer>
+      <offer id="37" available="true">
+        <url>https://demo.example/p/37</url>
+        <price>179</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/37.jpg</picture>
+        <name>Груши конференция, 1 кг</name>
+      </offer>
+      <offer id="38" available="true">
+        <url>https://demo.example/p/38</url>
+        <price>139.90</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/38.jpg</picture>
+        <name>Апельсины, 1 кг</name>
+      </offer>
+      <offer id="39" available="true">
+        <url>https://demo.example/p/39</url>
+        <price>49</price>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/39.jpg</picture>
+        <name>Укроп, пучок 50 г</name>
+      </offer>
+      <offer id="40" available="true">
+        <url>https://demo.example/p/40</url>
+        <currencyId>RUR</currencyId>
+        <categoryId>3</categoryId>
+        <picture>https://demo.example/img/40.jpg</picture>
+        <name>Клюква свежая, 300 г</name>
+      </offer>
+    </offers>
+  </shop>
+</yml_catalog>

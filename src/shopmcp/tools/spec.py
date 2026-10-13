@@ -18,6 +18,7 @@ from shopmcp.adapters.base import ShopAdapter
 from shopmcp.capabilities import Capability
 from shopmcp.cart.strategies import CartStrategy
 from shopmcp.config import StoreConfig
+from shopmcp.domain.models import PageMeta
 from shopmcp.i18n import L10n
 
 
@@ -68,7 +69,45 @@ def with_param_docs[F: Callable[..., Any]](fn: F, docs: Mapping[str, str]) -> F:
     return wrapper  # type: ignore[return-value]
 
 
+READ_ONLY = ToolAnnotations(
+    read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
+
+
+def page_meta(page: int, limit: int, total: int, q: str | None = None) -> PageMeta:
+    pages = -(-total // limit)  # ceil without floats
+    return PageMeta(q=q, page=page, limit=limit, total=total, pages=pages, has_more=page < pages)
+
+
+def scopes(cfg: StoreConfig, suffix: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Scopes a tool demands: `[auth.tool_scopes]` of the store, else `default`."""
+    return tuple(cfg.auth.tool_scopes.get(suffix, default))
+
+
+def canonical_tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[ToolSpec]:
+    """Every tool the framework knows, before filtering. Also the source of the text keys
+    a store may override, so `[texts]` stays valid when a tool is disabled."""
+    # Imported here: the tool modules import ToolSpec from this module.
+    from shopmcp.tools import account, catalog, info, promo, stores
+    from shopmcp.tools import cart as cart_tools
+
+    return [
+        *catalog.tools(cfg, adapter),
+        *promo.tools(cfg, adapter),
+        *stores.tools(cfg, adapter),
+        *cart_tools.tools(cfg, adapter, cart),
+        *account.tools(cfg, adapter),
+        *info.tools(cfg),
+    ]
+
+
 def build_tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[ToolSpec]:
     """Canonical tool set filtered by `spec.requires <= adapter.capabilities()` and
-    `suffix not in cfg.tools.disabled`. Implemented in stage 1B."""
-    raise NotImplementedError
+    `suffix not in cfg.tools.disabled`."""
+    caps = adapter.capabilities()
+    disabled = set(cfg.tools.disabled)
+    return [
+        spec
+        for spec in canonical_tools(cfg, adapter, cart)
+        if spec.requires <= caps and spec.suffix not in disabled
+    ]

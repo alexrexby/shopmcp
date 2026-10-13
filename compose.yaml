@@ -1,0 +1,20 @@
+# One service per store. Copy the service block for the next store: its own config
+# directory, its own volume, its own host port.
+services:
+  demo:
+    build: .
+    image: shopmcp:latest
+    restart: unless-stopped
+    # A store with an https feed mounts its directory at /app/store and keeps the image
+    # CMD. The demo feed is a relative path ("stores/demo/feed.xml", resolved from the
+    # working directory /app), so the demo is mounted at that path instead.
+    command: ["shopmcp", "serve", "/app/stores/demo/store.toml"]
+    ports:
+      - "127.0.0.1:8000:8000"  # publish behind a reverse proxy, not on 0.0.0.0
+    volumes:
+      - ./stores/demo:/app/stores/demo:ro
+      # Named volume, not a bind mount: it inherits the image's /data owner (uid 10001).
+      - demo-data:/data
+
+volumes:
+  demo-data:
