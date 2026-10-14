@@ -105,4 +105,4 @@ Tests marked `online` need network access to a remote source and are not meant f
 
 ## License
 
-No `LICENSE` file in the repository yet.
+[Apache License 2.0](LICENSE).

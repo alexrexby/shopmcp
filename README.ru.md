@@ -105,4 +105,4 @@ uv run ruff check
 
 ## Лицензия
 
-Файла `LICENSE` в репозитории пока нет.
+[Apache License 2.0](LICENSE).

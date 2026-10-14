@@ -3,6 +3,8 @@ name = "shopmcp"
 version = "0.1.0"
 description = "MCP server for an online store, built from a config and an adapter"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "mcp==2.3.0",
