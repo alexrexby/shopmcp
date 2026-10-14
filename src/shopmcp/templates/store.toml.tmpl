@@ -21,6 +21,7 @@ instructions = """"""
 kind = "yml"
 feed = $feed                        # https URL or path from this file / https-URL или путь от этого файла
 refresh_minutes = 60
+# stale_minutes = 180                # older index: /healthz 503 / индекс старше: /healthz 503
 
 [cart]
 # share_link | url_template | link_list. link_list works for any store: links to product pages.
@@ -47,6 +48,7 @@ public_url = "http://localhost:8000/mcp"
 # Behind a reverse proxy add the public host here, e.g. "mcp.shop.example".
 # За реверс-прокси добавьте сюда публичный хост, например "mcp.shop.example".
 allowed_hosts = ["localhost:*", "127.0.0.1:*"]
+# Browser clients only: listed origins also get CORS. / Только для браузерных клиентов: этим origin включается CORS.
 allowed_origins = []
 trusted_proxies = []                # whose X-Forwarded-For to trust / чьему X-Forwarded-For верить
 

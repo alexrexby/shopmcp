@@ -31,7 +31,7 @@ orders_history = ["orders.read"]
 | Field | Purpose |
 |---|---|
 | `auth.enabled` | `false` (default): no verification at all. `true` requires `issuer` and `jwks_uri` |
-| `auth.issuer` | Expected `iss` claim, compared as the exact string you write here |
+| `auth.issuer` | Expected `iss` claim. A bare host (`https://auth.shop.example`) matches with and without the trailing slash; an issuer with a path is compared exactly |
 | `auth.jwks_uri` | Where the signing keys are fetched from |
 | `auth.tool_scopes` | Scopes per tool, see below |
 | `server.public_url` | Token `aud` must equal it; also published as the `resource` of the metadata |
@@ -59,7 +59,7 @@ A `Bearer` token must be a JWT that passes all of these:
 |---|---|
 | Algorithm | Asymmetric only: `RS256` or `ES256` are accepted. `none` and `HS*` are rejected before any key lookup |
 | Signature | By the key from `jwks_uri` selected by the token's `kid` |
-| `iss` | Equal to `auth.issuer` |
+| `iss` | Equal to `auth.issuer` (a bare host: with or without the trailing slash) |
 | `aud` | Equal to `server.public_url` |
 | `exp` | Required, with a clock leeway of 30 seconds |
 | Scopes | From `scope` (space-separated string) or `scp` (list); a missing claim means no scopes |
@@ -97,7 +97,7 @@ The metadata, [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728), is public and 
 {"resource":"http://localhost:8001/mcp","authorization_servers":["https://auth.mini.example/"],"scopes_supported":["orders.read"],"bearer_methods_supported":["header"]}
 ```
 
-Note the trailing slash: URLs in the metadata are normalized, while the `iss` check uses `auth.issuer` exactly as written. If your authorization server publishes an issuer without a slash, write it without a slash in the config.
+Note the trailing slash: the SDK normalizes URLs in the metadata, so a bare host gets a `/`. The `iss` check accepts the issuer as you wrote it and as the metadata shows it: for a bare host both `https://auth.mini.example` and `https://auth.mini.example/` pass, whichever your authorization server puts into its tokens. An issuer with a path (`https://auth.shop.example/realms/shop`) is not changed by the normalization and is compared exactly, trailing slash included.
 
 The gate reads the request body to find the tool name, for single messages and for batches. A body over 256 KiB is refused with `413` before it reaches the server.
 

@@ -1,4 +1,4 @@
-"""Conformance checks C1-C14 (plan §7): one set for a local build and a live URL.
+"""Conformance checks C1-C15 (plan §7): one set for a local build and a live URL.
 
 Every check talks to the endpoint over HTTP with raw JSON-RPC (`urllib`), not through the
 SDK client: the client validates structuredContent against outputSchema and would raise
@@ -27,6 +27,8 @@ TIMEOUT = 10.0  # seconds per request
 STREAM_TIMEOUT = 3.0  # seconds a request may take before it counts as a held-open stream
 MISSING_ID = "__nope__"
 UNKNOWN_BARCODE = "0000000000000"
+FOREIGN_ORIGIN = "https://conformance.invalid"  # never in allowed_origins of a real store
+CORS_HEADERS = ("content-type", "authorization", "mcp-protocol-version")
 MAX_FACETS = 10
 _MARKUP = re.compile(r"&[a-zA-Z]+;|&#\d+;|<[a-zA-Z/]")
 
@@ -55,6 +57,7 @@ class Expect:
     tools: frozenset[str] | None = None  # full names
     personal: Mapping[str, tuple[str, ...]] | None = None  # full name -> scopes
     auth_enabled: bool | None = None
+    allowed_origins: tuple[str, ...] | None = None
 
     @classmethod
     def from_config(cls, cfg: StoreConfig) -> "Expect":
@@ -85,6 +88,7 @@ class Expect:
             tools=frozenset(f"{cfg.prefix}_{s.suffix}" for s in specs),
             personal={f"{cfg.prefix}_{s.suffix}": s.scopes for s in specs if s.scopes},
             auth_enabled=cfg.auth.enabled,
+            allowed_origins=tuple(cfg.server.allowed_origins),
         )
 
 
@@ -690,6 +694,49 @@ def check_auth(s: Session) -> Outcome:
     return _verdict(problems, f"{sorted(personal)} gated")
 
 
+def _preflight(s: Session, origin: str) -> Reply:
+    headers = {
+        "origin": origin,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": ", ".join(CORS_HEADERS),
+    }
+    return http("OPTIONS", s.url, headers=headers, timeout=STREAM_TIMEOUT)
+
+
+def check_cors(s: Session) -> Outcome:
+    """C15 (CORS): a preflight from a foreign origin gets no Access-Control-Allow-Origin;
+    with `allowed_origins` configured, a preflight from the first of them is 2xx with that
+    origin, POST and the MCP request headers, and a POST from it carries the same origin."""
+    problems = []
+    foreign = _preflight(s, FOREIGN_ORIGIN).headers.get("access-control-allow-origin")
+    if foreign is not None:
+        problems.append(f"preflight from {FOREIGN_ORIGIN}: Access-Control-Allow-Origin {foreign}")
+    origins = s.expect.allowed_origins
+    if not origins:
+        unknown = origins is None
+        return _verdict(problems, "allowed_origins unknown" if unknown else "CORS off")
+    # `scheme://host:*` allows any port: take one.
+    origin = origins[0][:-2] + ":8443" if origins[0].endswith(":*") else origins[0]
+    pre = _preflight(s, origin)
+    if pre.status is None or not 200 <= pre.status < 300:
+        problems.append(f"preflight from {origin}: HTTP {pre.status or pre.error}, expected 2xx")
+    else:
+        if pre.headers.get("access-control-allow-origin") != origin:
+            problems.append(f"preflight from {origin}: Access-Control-Allow-Origin is not it")
+        if "POST" not in pre.headers.get("access-control-allow-methods", ""):
+            problems.append("preflight: POST not in Access-Control-Allow-Methods")
+        allowed = pre.headers.get("access-control-allow-headers", "").lower()
+        missing = [h for h in CORS_HEADERS if h not in {a.strip() for a in allowed.split(",")}]
+        if missing:
+            problems.append(f"preflight: Access-Control-Allow-Headers lacks {missing}")
+    post = s.post(
+        {"jsonrpc": "2.0", "id": next(s._ids), "method": "tools/list"}, {"origin": origin}
+    )
+    if post.headers.get("access-control-allow-origin") != origin:
+        problems.append(f"POST from {origin}: HTTP {post.status}, no Access-Control-Allow-Origin")
+    return _verdict(problems, f"{origin} allowed, foreign refused")
+
+
 def check_rate_limit(s: Session) -> Outcome:
     """C14 (local only): the (rate_per_minute + 1)-th request within a minute is 429 with
     Retry-After."""
@@ -723,7 +770,8 @@ CHECKS: tuple[tuple[str, str, Check], ...] = (
     ("C11", "cart handoff", check_cart),
     ("C12", "no held-open streams, no 500", check_transport),
     ("C13", "auth: 401, RFC 9728", check_auth),
-    ("C14", "rate limit", check_rate_limit),
+    ("C15", "CORS by allowed_origins", check_cors),
+    ("C14", "rate limit", check_rate_limit),  # last: it empties the bucket
 )
 
 

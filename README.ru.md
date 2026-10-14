@@ -11,7 +11,7 @@
 - **Передача корзины, а не оформление.** Агент собирает список, сервер возвращает ссылку (или ссылки на карточки), оплачивает покупатель на сайте магазина.
 - **Гибридный доступ.** Каталог открыт; персональные инструменты закрыты OAuth 2.1 (сервер выступает resource server) с отдельным scope на инструмент ([docs/ru/auth.md](docs/ru/auth.md)).
 - **Тексты для модели на двух языках.** `locale = "ru" | "en"` и переопределения магазина в `[texts]`.
-- **Набор проверок соответствия.** `shopmcp check` гоняет проверки C1-C14 по локальной сборке или по живому URL.
+- **Набор проверок соответствия.** `shopmcp check` гоняет проверки C1-C15 по локальной сборке или по живому URL.
 
 ## Стек
 
@@ -71,7 +71,7 @@ Docker: `docker compose up -d --build`. Пошагово и с реальным 
 | [docs/ru/quickstart.md](docs/ru/quickstart.md) | Демо-магазин локально и в Docker; свой магазин |
 | [docs/ru/configuration.md](docs/ru/configuration.md) | `store.toml` по полям, `${ENV}`, `locale`, `[texts]`, `[limits]`, `[auth]` |
 | [docs/ru/adapters.md](docs/ru/adapters.md) | Контракт адаптера, capabilities, как написать адаптер, адаптер `yml` |
-| [docs/ru/conformance.md](docs/ru/conformance.md) | Проверки C1-C14, запуск по живому URL |
+| [docs/ru/conformance.md](docs/ru/conformance.md) | Проверки C1-C15, запуск по живому URL |
 | [docs/ru/auth.md](docs/ru/auth.md) | Гибридный доступ, OAuth resource server, scope на инструмент |
 | [docs/design-notes.ru.md](docs/design-notes.ru.md) | Почему фреймворк устроен именно так |
 
@@ -87,7 +87,7 @@ src/shopmcp/
   tools/            описания инструментов
   cart/             стратегии передачи корзины
   server/           ASGI-приложение, авторизация, лимит запросов, instructions
-  conformance/      проверки C1-C14 и раннер
+  conformance/      проверки C1-C15 и раннер
   templates/        шаблон store.toml для scaffold
 stores/demo/        демо-магазин: store.toml + feed.xml
 tests/              тесты pytest

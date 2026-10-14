@@ -11,7 +11,7 @@ A framework for MCP servers of online stores: a store needs only a TOML config a
 - **Cart hand-off, not checkout.** The agent builds a list; the server returns a link (or product page links) and the customer pays on the store site.
 - **Hybrid access.** Catalog tools are public; personal tools sit behind OAuth 2.1 as a resource server with a per-tool scope ([docs/en/auth.md](docs/en/auth.md)).
 - **Bilingual model-facing texts.** `locale = "ru" | "en"` plus per-store overrides in `[texts]`.
-- **Conformance suite.** `shopmcp check` runs checks C1-C14 against a local build or a live URL.
+- **Conformance suite.** `shopmcp check` runs checks C1-C15 against a local build or a live URL.
 
 ## Stack
 
@@ -71,7 +71,7 @@ The `yml` adapter declares `search`, `details`, `barcode`, `analogs`, `categorie
 | [docs/en/quickstart.md](docs/en/quickstart.md) | Run the demo store locally and in Docker; add your own store |
 | [docs/en/configuration.md](docs/en/configuration.md) | `store.toml` field by field, `${ENV}`, `locale`, `[texts]`, `[limits]`, `[auth]` |
 | [docs/en/adapters.md](docs/en/adapters.md) | Adapter contract, capabilities, writing an adapter, the `yml` adapter |
-| [docs/en/conformance.md](docs/en/conformance.md) | Checks C1-C14, running against a live URL |
+| [docs/en/conformance.md](docs/en/conformance.md) | Checks C1-C15, running against a live URL |
 | [docs/en/auth.md](docs/en/auth.md) | Hybrid access, OAuth resource server, per-tool scope |
 | [docs/design-notes.md](docs/design-notes.md) | Why the framework looks the way it does |
 
@@ -87,7 +87,7 @@ src/shopmcp/
   tools/            tool definitions
   cart/             hand-off strategies
   server/           ASGI app, auth, rate limit, instructions
-  conformance/      checks C1-C14 and the runner
+  conformance/      checks C1-C15 and the runner
   templates/        store.toml template for scaffold
 stores/demo/        demo store: store.toml + feed.xml
 tests/              pytest suite

@@ -1,5 +1,5 @@
-"""Generic HTTP+JSON adapter: a stub. It declares no capabilities, so a store on it
-exposes only the tools every store has (`cart_link_create`, `store_info`).
+"""Generic HTTP+JSON adapter: a stub. It declares no capabilities, so a store on it exposes only
+`store_info`: `cart_link_create` needs `details` to check the ids it hands off.
 
 Planned source, not implemented in iteration 1: any store API that returns JSON. The
 store config maps it to the domain model with JSONPath expressions, e.g.

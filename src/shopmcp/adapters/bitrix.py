@@ -1,5 +1,5 @@
 """1C-Bitrix adapter: a stub. It declares no capabilities, so a store on it exposes only
-the tools every store has (`cart_link_create`, `store_info`).
+`store_info`: `cart_link_create` needs `details` to check the ids it hands off.
 
 Planned source, not implemented in iteration 1 (method names to be checked against the
 store's Bitrix edition before implementing):

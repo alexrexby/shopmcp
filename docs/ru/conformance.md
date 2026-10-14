@@ -2,7 +2,7 @@
 
 [English](../en/conformance.md) · **Русский**
 
-`shopmcp check` выполняет 14 проверок (C1-C14) против MCP-эндпоинта и печатает по строке на проверку. Они кодируют дефекты, которые фреймворк обязуется не выпускать, см. [design-notes.ru.md](../design-notes.ru.md). Один и тот же набор работает и по локальной сборке магазина, и по живому URL.
+`shopmcp check` выполняет 15 проверок (C1-C15) против MCP-эндпоинта и печатает по строке на проверку. Они кодируют дефекты, которые фреймворк обязуется не выпускать, см. [design-notes.ru.md](../design-notes.ru.md). Один и тот же набор работает и по локальной сборке магазина, и по живому URL.
 
 Содержание: [Режимы](#режимы) · [Как читать отчёт](#как-читать-отчёт) · [Проверки](#проверки) · [Запуск по живому URL](#запуск-по-живому-url) · [Типичные падения](#типичные-падения)
 
@@ -55,7 +55,8 @@ C13  skip auth: 401, RFC 9728                      auth disabled
 | C11 | Корзина из двух найденных товаров передаётся по настроенной стратегии (`url_template`, деградировавший до `link_list` с пояснением, допускается); URL — `https`, URL `url_template` ведёт на сайт магазина и содержит id; неизвестный id — результат `isError`. Пропуск, если инструмента корзины нет |
 | C12 | `GET` по MCP-пути даёт `405`; `subscriptions/listen` не открывает поток; мусорные `POST` не приводят к 5xx |
 | C13 | Авторизация. Вызов персонального инструмента без токена — `401` с `resource_metadata` и верным `scope` в `WWW-Authenticate`; `/.well-known/oauth-protected-resource<path>` отвечает `200` и называет публичный URL как `resource`; публичный инструмент токена не требует. Пропуск при `auth.enabled = false` или без персональных инструментов |
-| C14 | Лимит запросов: запрос номер `rate_per_minute + 1` получает `429` с корректным `Retry-After`. Только локальный запуск (живой сервер был бы загружен), и нужен конфиг |
+| C14 | Лимит запросов: запрос номер `rate_per_minute + 1` получает `429` с корректным `Retry-After`. Только локальный запуск (живой сервер был бы загружен), и нужен конфиг. Выполняется последней, после C15: она опустошает корзину |
+| C15 | CORS. Preflight (`OPTIONS`) с чужого origin не получает `Access-Control-Allow-Origin`. Если задан `server.allowed_origins`, preflight с первого origin из списка (для записи с `:*` берётся порт `8443`) отвечает `2xx` ровно с этим origin, `POST` в `Access-Control-Allow-Methods` и `content-type`, `authorization`, `mcp-protocol-version` в `Access-Control-Allow-Headers`, а `POST` с него несёт тот же `Access-Control-Allow-Origin`. Без конфига проверяется только сторона чужого origin |
 
 Границы набора:
 
@@ -85,11 +86,12 @@ C10  ok   response budget, facets                  max 8828 bytes of 24000
 C11  ok   cart handoff                             url_template
 C12  ok   no held-open streams, no 500             GET 405, no listen stream
 C13  skip auth: 401, RFC 9728                      auth disabled
+C15  ok   CORS by allowed_origins                  CORS off
 C14  skip rate limit                               only against a server the runner started (would throttle a live one)
-12 ok, 0 failed, 2 skipped
+13 ok, 0 failed, 2 skipped
 ```
 
-Без конфига тот же сервер даёт `C3 ... (canonical set, no config)`, `C10 ... budget unknown (no config)` и `C13 skip ... no personal tools`:
+Без конфига тот же сервер даёт `C3 ... (canonical set, no config)`, `C10 ... budget unknown (no config)` `C13 skip ... no personal tools` и `C15 ... allowed_origins unknown`:
 
 ```bash
 uv run shopmcp check --url http://localhost:8000/mcp
@@ -98,7 +100,7 @@ uv run shopmcp check --url http://localhost:8000/mcp
 Практические замечания:
 
 - **Передавайте конфиг, если он есть.** Без него проверки не могут сверить сервер с его обещаниями (brand, лимиты, набор инструментов, стратегия корзины, scope).
-- **Запуск по живому URL расходует лимит запросов сервера.** Прогон делает десятки запросов (на демо-магазине локальный прогон упирается в лимит на 34-м запросе в C14, остальное потратили предыдущие проверки), а в корзине `rate_per_minute` запросов (по умолчанию 60). Если лимит выбрал другой клиент или предыдущий прогон, проверка падает с `429 rate limited; rerun in a minute`.
+- **Запуск по живому URL расходует лимит запросов сервера.** Прогон делает десятки запросов (на демо-магазине локальный прогон упирается в лимит на 33-м запросе в C14, остальное потратили предыдущие проверки), а в корзине `rate_per_minute` запросов (по умолчанию 60). Если лимит выбрал другой клиент или предыдущий прогон, проверка падает с `429 rate limited; rerun in a minute`.
 - **Сервер должен принимать заголовок `Host`.** Для публичного URL этот хост должен быть в `server.allowed_hosts` развёрнутого конфига.
 - **Запускайте после каждого деплоя и правки конфига**: это ближайшее подобие приёмочного теста эндпоинта, с которым будет работать клиент.
 

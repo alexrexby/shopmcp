@@ -3,9 +3,12 @@
 `start()` builds the index once; a background task rebuilds it every
 `refresh_minutes`. A failed refresh keeps serving the previous index and shows
 up in `health()`; only a first start with no usable index at all is fatal.
+Whatever a rebuild raises, the refresh goes on: a task that dies quietly would leave
+the store selling yesterday's prices behind a green health check.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import sqlite3
@@ -40,7 +43,11 @@ CAPABILITIES = frozenset(
         Capability.PROMOTIONS,
     }
 )
-_KEYS = {"feed", "refresh_minutes", "max_feed_mb"}
+_KEYS = {"feed", "refresh_minutes", "max_feed_mb", "stale_minutes"}
+FEED_SECONDS = 30 * 60  # one whole feed read; the socket timeout bounds a single operation
+STALE_FAILURES = 3  # refreshes failed in a row that make the index stale
+# Expected failures carry a curated message; anything else shows only its type in health().
+_EXPECTED = (FeedError, OSError, sqlite3.Error)
 
 
 class YmlAdapter(AdapterBase):
@@ -51,15 +58,19 @@ class YmlAdapter(AdapterBase):
         *,
         refresh_minutes: int = 60,
         max_feed_mb: int = 200,
+        stale_minutes: int | None = None,
     ) -> None:
         self.feed = feed
         self._label = redact(feed)  # for logs: the URL may carry a secret from ${ENV}
         self.ctx = ctx
         self.refresh_minutes = refresh_minutes
+        self._interval = refresh_minutes * 60.0  # seconds between refreshes; tests shorten it
+        # An index older than this is stale: /healthz answers 503.
+        self.stale_seconds = (stale_minutes or 3 * refresh_minutes) * 60
         self.max_bytes = max_feed_mb * 1024 * 1024
         self.index: index.Index | None = None
         self._refresher: asyncio.Task[None] | None = None
-        self._feed_stats = FeedStats()
+        self._failures = 0  # builds failed in a row
         self._last_error: str | None = None
         self._warning: str | None = None
 
@@ -68,38 +79,49 @@ class YmlAdapter(AdapterBase):
 
     async def start(self) -> None:
         path = self._index_path()
+        index.sweep(path, older_than=2 * FEED_SECONDS)
         try:
             await anyio.to_thread.run_sync(self._rebuild, path)
-        except (FeedError, OSError, sqlite3.Error) as e:
-            self._last_error = str(e)
-            if not path.exists():
-                log.error("feed %s: first index build failed: %s", self._label, e)
+        except Exception as e:
+            usable = index.usable(path)  # False: missing, or left by another schema version
+            self._failed(
+                e,
+                "rebuild failed, serving the previous index"
+                if usable
+                else "first index build failed",
+            )
+            if not usable:
+                log.error("feed %s: no usable index to serve", self._label)
                 raise Unavailable() from e
-            log.warning("feed %s: rebuild failed, serving the previous index: %s", self._label, e)
         self.index = index.Index(path)
         if self.refresh_minutes > 0:
             self._refresher = asyncio.create_task(self._refresh_loop(path))
+            self._refresher.add_done_callback(self._refresher_done)
 
     async def close(self) -> None:
-        if self._refresher is not None:
-            self._refresher.cancel()
-            try:
-                await self._refresher
-            except asyncio.CancelledError:
-                pass
-            self._refresher = None
+        task, self._refresher = self._refresher, None
+        if task is None:
+            return
+        task.cancel()
+        # A task that died has been logged by _refresher_done: it must not fail the stop.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
     async def health(self) -> dict[str, Any]:
         out: dict[str, Any] = {
-            "feed_offers": self._feed_stats.offers,
-            "skipped": self._feed_stats.skipped,
             "last_error": self._last_error,
+            "failed_refreshes": self._failures,
             "warning": self._warning,
         }
         if self.index is not None:
             stats = await self._call(self.index.stats)
-            stats["index_age_seconds"] = round(time.time() - stats.pop("built_at"))
+            age = time.time() - stats.pop("built_at")
+            stats["index_age_seconds"] = round(age)
             out.update(stats)
+            dead = self._refresher is not None and self._refresher.done()
+            out["stale"] = self.refresh_minutes > 0 and (
+                age > self.stale_seconds or self._failures >= STALE_FAILURES or dead
+            )
         return out
 
     async def search(self, q: SearchQuery) -> tuple[list[Product], int, Facets]:
@@ -151,28 +173,60 @@ class YmlAdapter(AdapterBase):
 
     def _rebuild(self, path: Path) -> None:
         stats = FeedStats()
-        with open_feed(self.feed, timeout=self.ctx.http_timeout, max_bytes=self.max_bytes) as f:
-            built = index.build(path, parse(f, stats), feed_date=lambda: stats.date)
-        # A repeated offer id is skipped like any other invalid offer.
-        stats.skipped += built.duplicates
-        self._feed_stats = stats
+
+        def feed_meta() -> dict[str, str]:
+            return {
+                "feed_date": stats.date or "",
+                "feed_offers": str(stats.offers),
+                "feed_skipped": str(stats.skipped),
+            }
+
+        with open_feed(
+            self.feed,
+            timeout=self.ctx.http_timeout,
+            max_bytes=self.max_bytes,
+            max_seconds=FEED_SECONDS,
+        ) as f:
+            built = index.build(path, parse(f, stats), feed_meta=feed_meta)
         self._last_error = None
+        self._failures = 0
         log.info(
             "feed %s: %d products, %d categories, %d skipped",
             self._label,
             built.products,
             built.categories,
-            stats.skipped,
+            stats.skipped + built.duplicates,
         )
 
+    def _failed(self, e: Exception, what: str) -> None:
+        """Record a failed build for health(); call inside the `except` block."""
+        self._failures += 1
+        if isinstance(e, _EXPECTED):
+            self._last_error = str(e)
+            log.warning("feed %s: %s: %s", self._label, what, e)
+        else:
+            self._last_error = f"unexpected {type(e).__name__}"
+            log.exception("feed %s: %s: unexpected %s", self._label, what, type(e).__name__)
+
     async def _refresh_loop(self, path: Path) -> None:
+        """Ends only by cancellation: every failure is recorded and the next cycle runs."""
         while True:
-            await anyio.sleep(self.refresh_minutes * 60)
+            await anyio.sleep(self._interval)
             try:
                 await anyio.to_thread.run_sync(self._rebuild, path)
-            except (FeedError, OSError, sqlite3.Error) as e:
-                self._last_error = str(e)
-                log.warning("feed %s: refresh failed, keeping the old index: %s", self._label, e)
+            except Exception as e:  # noqa: BLE001 - see the module docstring
+                self._failed(e, "refresh failed, keeping the old index")
+
+    def _refresher_done(self, task: asyncio.Task[None]) -> None:
+        # The loop catches everything; this is the alarm for whatever still gets through.
+        if task.cancelled() or task.exception() is None:
+            return
+        self._last_error = f"refresh stopped: {type(task.exception()).__name__}"
+        log.error(
+            "feed %s: refresh task died, the index is no longer refreshed",
+            self._label,
+            exc_info=task.exception(),
+        )
 
 
 def create(cfg: AdapterConfig, ctx: AdapterContext) -> YmlAdapter:
@@ -187,8 +241,14 @@ def create(cfg: AdapterConfig, ctx: AdapterContext) -> YmlAdapter:
         feed = str(ctx.config_dir / feed)
     refresh = extra.get("refresh_minutes", 60)
     max_mb = extra.get("max_feed_mb", 200)
+    stale = extra.get("stale_minutes")
     if not isinstance(refresh, int) or isinstance(refresh, bool) or refresh < 0:
         raise ConfigError("adapter.refresh_minutes must be an integer >= 0 (0 = no refresh)")
     if not isinstance(max_mb, int) or isinstance(max_mb, bool) or max_mb < 1:
         raise ConfigError("adapter.max_feed_mb must be a positive integer")
-    return YmlAdapter(feed, ctx, refresh_minutes=refresh, max_feed_mb=max_mb)
+    if stale is not None and (
+        not isinstance(stale, int) or isinstance(stale, bool) or stale <= refresh
+    ):
+        # Not above the refresh interval, every index would turn stale between two refreshes.
+        raise ConfigError("adapter.stale_minutes must be an integer above refresh_minutes")
+    return YmlAdapter(feed, ctx, refresh_minutes=refresh, max_feed_mb=max_mb, stale_minutes=stale)

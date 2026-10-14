@@ -145,12 +145,13 @@ An unknown kind fails with the list of kinds known at that moment.
 
 The feed is the source of truth, a SQLite index is its cache.
 
-- `start()` builds the index once. A background task rebuilds it every `adapter.refresh_minutes`. A failed refresh keeps the previous index and shows up as `last_error` in `/healthz`; only a first start with no usable index is fatal (`upstream_unavailable`).
+- `start()` builds the index once. A background task rebuilds it every `adapter.refresh_minutes`. A failed refresh, whatever it raises, keeps the previous index and shows up as `last_error` in `/healthz`; the next refresh runs on schedule. Only a first start with no usable index is fatal (`upstream_unavailable`); an index left by another version of the framework does not count as usable.
+- `/healthz` answers `503` with `"stale": true` when the index is older than `stale_minutes` (default three refresh intervals), three refreshes in a row failed, or the refresh task stopped. One feed read is capped at 30 minutes in total, so a host trickling bytes fails the refresh instead of holding it.
 - The feed is read as a stream, so memory stays flat on feeds of hundreds of megabytes. `max_feed_mb` caps the size; a DTD with internal entities is refused.
 - An invalid or repeated offer is skipped and counted in `skipped`; it does not stop the feed.
 - The index file is `$SHOPMCP_DATA_DIR/<store id>.sqlite`. If the directory is not writable, the index goes to a temporary directory and `/healthz` carries a `warning`.
 - Capabilities: `search`, `details`, `barcode`, `analogs`, `categories`, `promotions`. Not provided: `pickup_points`, `share_link`, `orders`.
 - Search normalizes the query and the index with Russian and English snowball stemmers, so inflected forms match (the Russian `молока` finds `молоко`).
-- Keys: `feed`, `refresh_minutes`, `max_feed_mb` ([configuration.md](configuration.md#adapter)).
+- Keys: `feed`, `refresh_minutes`, `max_feed_mb`, `stale_minutes` ([configuration.md](configuration.md#adapter)).
 
 Feed format: a standard `yml_catalog` with `shop/categories` and `shop/offers`; the demo feed [`stores/demo/feed.xml`](../../stores/demo/feed.xml) shows the supported elements (`url`, `price`, `oldprice`, `currencyId`, `categoryId`, `picture`, `name` or `typePrefix`+`vendor`+`model`, `vendor`, `barcode`, `description`, `param`, the `available` attribute).

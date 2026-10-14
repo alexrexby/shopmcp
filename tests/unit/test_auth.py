@@ -451,6 +451,29 @@ async def test_verifier_rejects_foreign_audience(jwks):
 
 
 @pytest.mark.anyio
+async def test_bare_host_issuer_matches_with_or_without_slash(jwks):
+    # The metadata advertises "https://id.demo.example/" (SDK URL normalization), the
+    # config says it without the slash: a token from either kind of server must pass.
+    v = verifier(jwks)
+    assert await v.verify_token(mint(iss=ISSUER)) is not None
+    assert await v.verify_token(mint(iss=ISSUER + "/")) is not None
+    assert await v.verify_token(mint(iss="https://id.other.example")) is None
+
+
+@pytest.mark.parametrize(
+    "issuer, forms",
+    [
+        ("https://id.example", ("https://id.example", "https://id.example/")),
+        ("https://id.example/", ("https://id.example", "https://id.example/")),
+        ("https://id.example/realms/x", ("https://id.example/realms/x",)),
+        ("https://id.example/realms/x/", ("https://id.example/realms/x/",)),
+    ],
+)
+def test_issuer_forms(issuer, forms):
+    assert auth.issuer_forms(issuer) == forms
+
+
+@pytest.mark.anyio
 async def test_verifier_rejects_expired(jwks):
     # On its own: over HTTP the SDK backend re-checks expires_at and would hide a regression.
     assert await verifier(jwks).verify_token(mint(exp=int(time.time()) - 120)) is None
@@ -510,6 +533,29 @@ async def test_slow_jwks_fails_closed_within_timeout(jwks, monkeypatch):
     started = time.monotonic()
     assert await verifier(jwks).verify_token(mint()) is None
     assert time.monotonic() - started < 1.5
+
+
+def test_wait_for_another_jwks_fetch_is_bounded(jwks, monkeypatch):
+    # Review, rest of Н2: a fetch stuck on a trickling JWKS held every Bearer check forever.
+    monkeypatch.setattr(auth, "JWKS_LOCK_WAIT", 0.3)
+    v = verifier(jwks)
+    errors: list[BaseException] = []
+
+    def check() -> None:
+        try:
+            v._verify(mint())
+        except BaseException as e:  # noqa: BLE001 - asserted below
+            errors.append(e)
+
+    with v._jwks_lock:  # the stuck fetch
+        t = threading.Thread(target=check, daemon=True)
+        t.start()
+        t.join(3)
+        waited_out = not t.is_alive()
+    t.join()
+    assert waited_out
+    assert isinstance(errors[0], jwt.PyJWKClientConnectionError)
+    v._verify(mint())  # the lock is free again: checks go on
 
 
 # --- a slow JWKS must not take the catalog down (security Н2) ---------------------------

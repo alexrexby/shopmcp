@@ -12,6 +12,7 @@ import pytest
 from fakes import FakeAdapter, make_product
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from pydantic import ValidationError
 from starlette.types import ASGIApp
 from test_tools_spec import ALL, cfg
@@ -19,6 +20,7 @@ from test_tools_spec import ALL, cfg
 from shopmcp.capabilities import Capability
 from shopmcp.config import ConfigError, StoreConfig
 from shopmcp.server.app import build_app
+from shopmcp.server.cors import origin_allowed
 from shopmcp.server.ratelimit import RateLimit
 
 BASE = "http://localhost:8000"
@@ -239,6 +241,20 @@ async def test_healthz_and_adapter_lifecycle():
     assert adapter.closed
 
 
+class StaleAdapter(FakeAdapter):
+    async def health(self) -> dict[str, Any]:
+        return {"products": 3, "stale": True, "index_age_seconds": 99999}
+
+
+@pytest.mark.anyio
+async def test_healthz_is_503_on_a_stale_index():
+    # Review P2: the Docker HEALTHCHECK reacts to non-2xx only.
+    async with serve(build_app(cfg(), adapter=StaleAdapter())) as http:
+        res = await http.get("/healthz")
+    assert res.status_code == 503
+    assert res.json()["status"] == "stale" and res.json()["index_age_seconds"] == 99999
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("accept", ["text/event-stream", "application/json", None])
 async def test_get_on_mcp_path_is_405_at_once(accept):
@@ -413,3 +429,103 @@ async def test_subscriptions_listen_does_not_open_a_stream():
             res = await http.post("/mcp", json=body, headers=headers)
     assert "event-stream" not in res.headers.get("content-type", "")
     assert res.json()["error"]["code"] == -32601
+
+
+# --- CORS: opt-in by server.allowed_origins (review, PostOnly/CORS question) -------------
+
+APP_ORIGIN = "https://app.example"
+LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+ACCEPT = {"accept": "application/json, text/event-stream"}
+
+
+def preflight(origin: str, headers: str = "content-type, authorization") -> dict[str, str]:
+    return {
+        "origin": origin,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": headers,
+    }
+
+
+@pytest.mark.anyio
+async def test_preflight_from_an_allowed_origin_is_204():
+    c = cfg(server__allowed_origins=[APP_ORIGIN])
+    requested = "Content-Type, Authorization, MCP-Protocol-Version, mcp-param-q, cookie, x-evil"
+    async with serve(build_app(c, adapter=FakeAdapter())) as http:
+        res = await http.options("/mcp", headers=preflight(APP_ORIGIN, requested))
+    assert res.status_code == 204
+    assert res.headers.get_list("access-control-allow-origin") == [APP_ORIGIN]
+    assert res.headers["access-control-allow-methods"] == "POST"
+    assert res.headers["access-control-allow-headers"] == (
+        "content-type, authorization, mcp-protocol-version, mcp-param-q"
+    )
+    assert "access-control-allow-credentials" not in res.headers
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "origins, origin",
+    [
+        ([APP_ORIGIN], "https://evil.example"),
+        ([APP_ORIGIN], "https://app.example.evil"),
+        ([], APP_ORIGIN),
+    ],
+    ids=["foreign", "suffix", "cors-off"],
+)
+async def test_preflight_otherwise_stays_closed(origins, origin):
+    c = cfg(server__allowed_origins=origins)
+    async with serve(build_app(c, adapter=FakeAdapter())) as http:
+        res = await http.options("/mcp", headers=preflight(origin))
+    assert res.status_code == 405
+    assert "access-control-allow-origin" not in res.headers
+
+
+@pytest.mark.anyio
+async def test_post_from_an_allowed_origin_carries_acao():
+    c = cfg(server__allowed_origins=[APP_ORIGIN])
+    async with serve(build_app(c, adapter=FakeAdapter())) as http:
+        ok = await http.post("/mcp", json=LIST, headers={**ACCEPT, "origin": APP_ORIGIN})
+        foreign = await http.post(
+            "/mcp", json=LIST, headers={**ACCEPT, "origin": "https://evil.example"}
+        )
+    assert ok.status_code == 200
+    assert ok.headers.get_list("access-control-allow-origin") == [APP_ORIGIN]
+    assert "www-authenticate" in ok.headers["access-control-expose-headers"]
+    assert foreign.status_code == 403 and "access-control-allow-origin" not in foreign.headers
+
+
+@pytest.mark.anyio
+async def test_rate_limit_and_auth_answers_are_readable_by_the_browser():
+    c = auth_cfg(server__allowed_origins=[APP_ORIGIN], limits__rate_per_minute=2)
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call"}
+    body["params"] = {"name": "demo_orders_history"}
+    headers = {**ACCEPT, "origin": APP_ORIGIN}
+    async with serve(build_app(c, adapter=FakeAdapter())) as http:
+        metadata = await http.get(
+            "/.well-known/oauth-protected-resource/mcp", headers={"origin": APP_ORIGIN}
+        )
+        gated = await http.post("/mcp", json=body, headers=headers)
+        limited = await http.post("/mcp", json=body, headers=headers)
+    assert gated.status_code == 401 and gated.headers["access-control-allow-origin"] == APP_ORIGIN
+    assert limited.status_code == 429
+    assert limited.headers["access-control-allow-origin"] == APP_ORIGIN
+    # The SDK's own CORS on the metadata route; a second header would break the browser.
+    assert len(metadata.headers.get_list("access-control-allow-origin")) == 1
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://app.example",
+        "https://app.example:8443",
+        "http://localhost:5173",
+        "http://localhost",
+        "https://app.example.evil",
+        "http://localhost.evil:1",
+        "null",
+        "*",
+    ],
+)
+def test_origin_rule_is_the_sdk_rule(origin):
+    allowed = ["https://app.example", "http://localhost:*"]
+    sdk = TransportSecurityMiddleware(TransportSecuritySettings(allowed_origins=allowed))
+    assert origin_allowed(origin, allowed) is sdk._validate_origin(origin)

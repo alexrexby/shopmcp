@@ -1,5 +1,5 @@
 """ASGI app for one store: MCPServer with the tools its adapter supports, /healthz,
-rate limit and, when enabled, auth. Every SDK call of the server side lives here and in
+rate limit and, when enabled, auth and CORS. Every SDK call of the server side lives here and in
 `server/auth.py`."""
 
 import functools
@@ -25,6 +25,7 @@ from shopmcp.config import ConfigError, StoreConfig
 from shopmcp.envelope import fail
 from shopmcp.errors import InternalError, ShopError
 from shopmcp.i18n import Texts, builtin
+from shopmcp.server.cors import McpCors
 from shopmcp.server.instructions import build_instructions
 from shopmcp.server.ratelimit import RateLimit
 from shopmcp.tools.spec import ToolSpec, build_tools, canonical_tools, with_param_docs
@@ -156,6 +157,9 @@ def build_app(
         except Exception:
             log.exception("health check failed")
             return JSONResponse({"status": "error", "store": cfg.id}, status_code=503)
+        if health.get("stale"):
+            # A frozen catalog sells yesterday's prices: the HEALTHCHECK must turn red.
+            return JSONResponse({"status": "stale", "store": cfg.id, **health}, status_code=503)
         return JSONResponse({"status": "ok", "store": cfg.id, **health})
 
     # host and allowed_hosts always explicit: with the default host the SDK allows only
@@ -176,10 +180,14 @@ def build_app(
 
         tool_scopes = {f"{cfg.prefix}_{s.suffix}": s.scopes for s in specs if s.scopes}
         app = wrap_with_auth(app, cfg, tool_scopes)
-    # Outermost: a token check costs a JWKS lookup, so it is counted like any request.
-    return RateLimit(
+    # Outside the auth: a token check costs a JWKS lookup, so it is counted like any request.
+    app = RateLimit(
         app,
         cfg.limits.rate_per_minute,
         trusted_proxies=cfg.server.trusted_proxies,
         exempt_paths=(HEALTH_PATH,),
     )
+    if cfg.server.allowed_origins:
+        # Outermost: a 429 or 401 without CORS headers is unreadable to a browser client.
+        app = McpCors(app, cfg.server.path, cfg.server.allowed_origins)
+    return app

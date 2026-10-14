@@ -1,15 +1,17 @@
 """SQLite FTS5 index over a parsed feed: a rebuildable cache, never the source of truth.
 
-A rebuild writes `<file>.tmp` and swaps it in with `os.replace`. Readers open a
-read-only connection per query, so a reader in flight keeps the old file and the
-next query sees the new one: no locks between the refresher and the tools.
+A rebuild writes a uniquely named `<file>.<random>.tmp` and swaps it in with
+`os.replace`, so two builders on one data dir never touch each other's file. Readers
+open a read-only connection per query, so a reader in flight keeps the old file and
+the next query sees the new one: no locks between the refresher and the tools.
 """
 
 import json
 import os
 import sqlite3
+import tempfile
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +21,9 @@ from shopmcp.adapters.base import SearchQuery
 from shopmcp.adapters.yml.stem import stem_text, stems, variants
 from shopmcp.domain.models import Category, Facets, FacetValue, Product
 
+# Bumped whenever the tables or the stored Product json change: an index of another
+# version is treated as absent, never served as "the previous index".
+SCHEMA_VERSION = "2"
 _SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 -- position = feed order and the FTS rowid
@@ -62,14 +67,17 @@ class BuildStats:
 def build(
     path: Path,
     items: Iterable[Category | Product],
-    feed_date: Callable[[], str | None] = lambda: None,
+    feed_meta: Callable[[], Mapping[str, str]] = dict,
 ) -> BuildStats:
-    """Index `items` into `path.tmp`, then atomically replace `path`.
+    """Index `items` into a temp file next to `path`, then atomically replace `path`.
 
-    `feed_date` is called after `items` is exhausted: a streaming parser learns it on the way.
+    `feed_meta` (`feed_date`, `feed_offers`, `feed_skipped`) is called after `items` is
+    exhausted: a streaming parser learns them on the way. Stored in `meta` with the counts,
+    so `stats()` never scans the tables.
     """
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.unlink(missing_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    os.close(fd)  # an empty file is an empty database to sqlite
+    tmp = Path(name)
     try:
         with closing(sqlite3.connect(tmp)) as db:
             db.executescript(_SCHEMA)
@@ -90,16 +98,45 @@ def build(
                 else:
                     duplicates += 1
             categories = _count_categories(db)
-            db.executemany(
-                "INSERT INTO meta VALUES (?, ?)",
-                [("built_at", str(time.time())), ("feed_date", feed_date() or "")],
-            )
+            meta = {
+                **feed_meta(),
+                "schema": SCHEMA_VERSION,
+                "built_at": str(time.time()),
+                "products": str(products),
+                "categories": str(categories),
+                "duplicates": str(duplicates),
+            }
+            db.executemany("INSERT INTO meta VALUES (?, ?)", meta.items())
             db.execute("INSERT INTO products_fts(products_fts) VALUES ('optimize')")
             db.commit()
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
     return BuildStats(products=products, categories=categories, duplicates=duplicates)
+
+
+def usable(path: Path) -> bool:
+    """An index file of this schema version; anything else counts as no index at all."""
+    if not path.exists():
+        return False
+    try:
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as db:
+            row = db.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None and row[0] == SCHEMA_VERSION
+
+
+def sweep(path: Path, older_than: float) -> None:
+    """Remove temp files of builds killed mid-way (a finished or failed build removes its
+    own). A live build rewrites its file all the time, so only stale ones go."""
+    cutoff = time.time() - older_than
+    for tail in path.parent.glob(path.name + ".*.tmp*"):
+        try:
+            if tail.stat().st_mtime < cutoff:
+                tail.unlink()
+        except OSError:
+            pass
 
 
 def _insert_product(db: sqlite3.Connection, p: Product, position: int) -> bool:
@@ -298,13 +335,17 @@ class Index:
         return [Product.model_validate_json(j) for (j,) in rows], total
 
     def stats(self) -> dict[str, Any]:
+        """From `meta` alone: /healthz is public and must not cost a scan of the catalog.
+        Feed counts are None when the index was built without them ("unknown", not zero)."""
         with closing(self._connect()) as db:
             meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
-            (products,) = db.execute("SELECT COUNT(*) FROM products").fetchone()
-            (categories,) = db.execute("SELECT COUNT(*) FROM categories").fetchone()
+        offers, skipped = meta.get("feed_offers"), meta.get("feed_skipped")
         return {
-            "products": products,
-            "categories": categories,
-            "built_at": float(meta.get("built_at", 0)),
+            "products": int(meta["products"]),
+            "categories": int(meta["categories"]),
+            "feed_offers": int(offers) if offers else None,
+            # A repeated offer id is skipped like any other invalid offer.
+            "skipped": int(skipped) + int(meta["duplicates"]) if skipped else None,
+            "built_at": float(meta["built_at"]),
             "feed_date": meta.get("feed_date") or None,
         }

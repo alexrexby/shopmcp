@@ -64,7 +64,7 @@ curl -s localhost:8000/healthz
 ```
 
 ```json
-{"status":"ok","store":"demo","feed_offers":40,"skipped":1,"last_error":null,"warning":null,"products":39,"categories":6,"feed_date":"2026-10-13T09:00:00+03:00","index_age_seconds":3}
+{"status":"ok","store":"demo","last_error":null,"failed_refreshes":0,"warning":null,"products":39,"categories":6,"feed_offers":40,"skipped":1,"feed_date":"2026-10-13T09:00:00+03:00","index_age_seconds":3,"stale":false}
 ```
 
 The server is stateless and answers in JSON; only `POST` reaches the MCP path (a `GET` gets `405`). List the tools:
@@ -118,8 +118,9 @@ C10  ok   response budget, facets                  max 8828 bytes of 24000
 C11  ok   cart handoff                             url_template
 C12  ok   no held-open streams, no 500             GET 405, no listen stream
 C13  skip auth: 401, RFC 9728                      auth disabled
-C14  ok   rate limit                               429 at request 34 (earlier checks spent part of the bucket)
-13 ok, 0 failed, 1 skipped
+C15  ok   CORS by allowed_origins                  CORS off
+C14  ok   rate limit                               429 at request 33 (earlier checks spent part of the bucket)
+14 ok, 0 failed, 1 skipped
 ```
 
 `check` starts the store on a free local port with a temporary index, so a running `serve` does not interfere. The exit code is `0` if nothing failed and `1` otherwise. What each check verifies: [conformance.md](conformance.md).
@@ -201,4 +202,4 @@ If the feed path is wrong, the server does not start (`first index build failed:
 
 ## Where the index lives
 
-The `yml` adapter keeps a SQLite index in `$SHOPMCP_DATA_DIR/<store id>.sqlite` (default: `./data`). `serve` and `index` must use the same `SHOPMCP_DATA_DIR`. The index is a cache: a background task rebuilds it every `adapter.refresh_minutes`; a failed refresh keeps serving the previous index and shows `last_error` in `/healthz`.
+The `yml` adapter keeps a SQLite index in `$SHOPMCP_DATA_DIR/<store id>.sqlite` (default: `./data`). `serve` and `index` must use the same `SHOPMCP_DATA_DIR`. The index is a cache: a background task rebuilds it every `adapter.refresh_minutes`; a failed refresh keeps serving the previous index and shows `last_error` in `/healthz`; an index older than `adapter.stale_minutes` turns `/healthz` into `503`.

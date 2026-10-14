@@ -2,7 +2,7 @@
 
 **English** · [Русский](../ru/conformance.md)
 
-`shopmcp check` runs 14 checks (C1-C14) against an MCP endpoint and prints one line per check. They encode the defects the framework refuses to ship, see [design-notes.md](../design-notes.md). The same set runs against a local build of a store and against a live URL.
+`shopmcp check` runs 15 checks (C1-C15) against an MCP endpoint and prints one line per check. They encode the defects the framework refuses to ship, see [design-notes.md](../design-notes.md). The same set runs against a local build of a store and against a live URL.
 
 Contents: [Modes](#modes) · [Reading the report](#reading-the-report) · [The checks](#the-checks) · [Run against a live URL](#run-against-a-live-url) · [Common failures](#common-failures)
 
@@ -55,7 +55,8 @@ Columns: id, status (`ok`, `fail`, `skip`), title, detail. A check that crashes 
 | C11 | A cart of two found products is handed off by the configured strategy (a `url_template` degraded to `link_list` with a note is accepted); URLs are `https`, a `url_template` URL points at the store site and contains the ids; an unknown id is an `isError` result. Skipped if there is no cart tool |
 | C12 | `GET` on the MCP path is `405`; `subscriptions/listen` does not open a stream; junk `POST` bodies do not produce a 5xx |
 | C13 | Auth. A personal tool called without a token is `401` with `resource_metadata` and the right `scope` in `WWW-Authenticate`; `/.well-known/oauth-protected-resource<path>` answers `200` and names the public URL as `resource`; a public tool needs no token. Skipped if `auth.enabled = false` or there are no personal tools |
-| C14 | Rate limit: request number `rate_per_minute + 1` gets `429` with a valid `Retry-After`. Local runs only (a live server would be throttled), and it needs a config |
+| C14 | Rate limit: request number `rate_per_minute + 1` gets `429` with a valid `Retry-After`. Local runs only (a live server would be throttled), and it needs a config. Runs last, after C15: it empties the bucket |
+| C15 | CORS. A preflight (`OPTIONS`) from a foreign origin gets no `Access-Control-Allow-Origin`. With `server.allowed_origins` set, a preflight from the first listed origin (a `:*` entry gets port `8443`) is `2xx` with exactly that origin, `POST` in `Access-Control-Allow-Methods` and `content-type`, `authorization`, `mcp-protocol-version` in `Access-Control-Allow-Headers`, and a `POST` from it carries the same `Access-Control-Allow-Origin`. Without a config only the foreign side is checked |
 
 Limits of the suite:
 
@@ -85,11 +86,12 @@ C10  ok   response budget, facets                  max 8828 bytes of 24000
 C11  ok   cart handoff                             url_template
 C12  ok   no held-open streams, no 500             GET 405, no listen stream
 C13  skip auth: 401, RFC 9728                      auth disabled
+C15  ok   CORS by allowed_origins                  CORS off
 C14  skip rate limit                               only against a server the runner started (would throttle a live one)
-12 ok, 0 failed, 2 skipped
+13 ok, 0 failed, 2 skipped
 ```
 
-Without the config the same server gives `C3 ... (canonical set, no config)`, `C10 ... budget unknown (no config)` and `C13 skip ... no personal tools`:
+Without the config the same server gives `C3 ... (canonical set, no config)`, `C10 ... budget unknown (no config)` `C13 skip ... no personal tools` and `C15 ... allowed_origins unknown`:
 
 ```bash
 uv run shopmcp check --url http://localhost:8000/mcp
@@ -98,7 +100,7 @@ uv run shopmcp check --url http://localhost:8000/mcp
 Practical points:
 
 - **Pass the config when you have it.** Without it the checks cannot hold the server to its promises (brand, limits, tool set, cart strategy, scopes).
-- **The live run spends the server's rate limit.** A run makes dozens of requests (on the demo store a local run reaches the limit at request 34 in C14, after earlier checks spent the rest) and a bucket holds `rate_per_minute` (60 by default). If another client or a previous run used it up, a check fails with `429 rate limited; rerun in a minute`.
+- **The live run spends the server's rate limit.** A run makes dozens of requests (on the demo store a local run reaches the limit at request 33 in C14, after earlier checks spent the rest) and a bucket holds `rate_per_minute` (60 by default). If another client or a previous run used it up, a check fails with `429 rate limited; rerun in a minute`.
 - **The `Host` header must be accepted by the server.** For a public URL the host must be in `server.allowed_hosts` of the deployed config.
 - **Run it after every deploy and config change**; it is the closest thing to an acceptance test of the endpoint a client will actually talk to.
 

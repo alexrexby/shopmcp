@@ -1,6 +1,7 @@
 """YML parser: mapping, cleanup of source text, tolerance to bad offers, hostile XML."""
 
 import gzip
+import http.client
 import io
 import re
 import time
@@ -169,6 +170,41 @@ def test_open_feed_reads_gzip_and_caps_size(tmp_path):
         pytest.raises(FeedError, match="unpacked"),
         open_feed(str(bomb), timeout=1, max_bytes=100_000) as f,
     ):
+        list(parse(f, FeedStats()))
+
+
+def test_corrupt_gzip_is_a_feed_error(tmp_path):
+    # zlib.error is not an OSError: it used to escape FeedError and kill the refresh.
+    data = bytearray(gzip.compress(FEED.read_bytes()))
+    data[12] ^= 0xFF
+    gz = tmp_path / "feed.xml.gz"
+    gz.write_bytes(data)
+    with (
+        pytest.raises(FeedError, match="decompress"),
+        open_feed(str(gz), timeout=1, max_bytes=10**6) as f,
+    ):
+        list(parse(f, FeedStats()))
+
+
+class _CutConnection(io.BytesIO):
+    """A chunked HTTP body cut mid-way: http.client raises IncompleteRead, not OSError."""
+
+    def read(self, n: int = -1) -> bytes:
+        raise http.client.IncompleteRead(b"<yml", 1000)
+
+
+def test_cut_connection_is_a_feed_error():
+    with pytest.raises(FeedError, match="IncompleteRead"):
+        list(parse(_CutConnection(), FeedStats()))  # type: ignore[arg-type]
+
+
+def test_whole_download_has_a_deadline(tmp_path):
+    # The socket timeout is per read: a host trickling bytes never trips it.
+    with (
+        pytest.raises(FeedError, match="exceeded"),
+        open_feed(str(FEED), timeout=1, max_bytes=10**6, max_seconds=0) as f,
+    ):
+        time.sleep(0.01)
         list(parse(f, FeedStats()))
 
 

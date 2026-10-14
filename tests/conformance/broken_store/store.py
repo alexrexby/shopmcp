@@ -45,6 +45,8 @@ DEFECTS: dict[str, set[str]] = {
     "root_500": {"C12"},
     "no_auth": {"C13"},
     "no_rate_limit": {"C14"},
+    "no_cors": {"C15"},  # allowed_origins set, yet no CORS: the server before the layer
+    "cors_any_origin": {"C15"},
 }
 
 
@@ -250,6 +252,39 @@ class Streams:
         await self.app(scope, receive, send)
 
 
+class Cors:
+    """`no_cors`: the preflight is 405 and no answer carries Access-Control-* headers;
+    `cors_any_origin`: whatever Origin comes is reflected and its preflight is 204."""
+
+    def __init__(self, app: ASGIApp, defect: str) -> None:
+        self.app, self.defect = app, defect
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        origin = dict(scope["headers"]).get(b"origin")
+        if self.defect == "cors_any_origin" and origin and scope["method"] == "OPTIONS":
+            headers = [(b"access-control-allow-origin", origin)]
+            await send({"type": "http.response.start", "status": 204, "headers": headers})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if self.defect == "no_cors" and scope["method"] == "OPTIONS":
+            await send({"type": "http.response.start", "status": 405, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        async def strip(message: Message) -> None:
+            if message["type"] == "http.response.start" and self.defect == "no_cors":
+                kept = [
+                    (k, v) for k, v in message["headers"] if not k.startswith(b"access-control-")
+                ]
+                message = {**message, "headers": kept}
+            await send(message)
+
+        await self.app(scope, receive, strip)
+
+
 async def _endless(receive: Receive, send: Send) -> None:
     await send(
         {
@@ -290,4 +325,6 @@ def build(defect: str | None = None) -> ASGIApp:
         app = Wire(app, REWRITES[defect])
     if defect in ("get_stream", "listen_stream", "root_500"):
         app = Streams(app, defect)
+    if defect in ("no_cors", "cors_any_origin"):
+        app = Cors(app, defect)
     return app

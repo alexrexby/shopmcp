@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import unicodedata
+import urllib.parse
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
@@ -39,6 +40,9 @@ JWKS_TIMEOUT = 5.0  # seconds per JWKS fetch; verification fails closed on timeo
 JWKS_LIFESPAN = 300.0  # seconds the fetched key set is trusted
 JWKS_COOLDOWN = 30.0  # min seconds between refetches forced by an unknown kid
 JWKS_DOWN_BACKOFF = 10.0  # seconds a failed JWKS fetch is not retried: tokens just fail
+# Seconds a check waits for another thread's JWKS fetch. JWKS_TIMEOUT bounds one socket
+# operation, not the fetch: an IdP trickling the body holds the lock for as long as it likes.
+JWKS_LOCK_WAIT = 2 * JWKS_TIMEOUT
 VERIFY_THREADS = 4  # worker threads token checks may hold; the catalog keeps the rest
 MAX_BODY = 256 * 1024  # bytes; the gate must see the whole body before the SDK does
 
@@ -48,6 +52,21 @@ _SCOPE_TOKEN = re.compile(r"^[\x21\x23-\x5b\x5d-\x7e]+$")
 # 2026-07-28 one (json). They disagree (UTF-16, BOM, lone surrogates), so the gate looks
 # through both: a call either of them would dispatch is a call the gate must see.
 _PARSERS: tuple[Callable[[bytes], Any], ...] = (pydantic_core.from_json, json.loads)
+
+
+def issuer_forms(issuer: str) -> tuple[str, ...]:
+    """`iss` values accepted for `auth.issuer`: as written and as the RFC 9728 metadata
+    advertises it, after the SDK's URL normalization (which adds "/" to a bare host).
+    A bare host is taken with and without the slash: authorization servers publish both
+    (`https://accounts.example`, `https://tenant.example/`). A path is compared exactly."""
+    try:
+        normalized = str(AnyHttpUrl(issuer))
+    except ValueError:
+        return (issuer,)
+    forms = {issuer, normalized}
+    if urllib.parse.urlsplit(normalized).path == "/":
+        forms.add(normalized.rstrip("/"))
+    return tuple(sorted(forms))
 
 
 class JwksTokenVerifier(TokenVerifier):
@@ -64,6 +83,7 @@ class JwksTokenVerifier(TokenVerifier):
                 f"algorithms must be a non-empty subset of {sorted(ASYMMETRIC_ALGORITHMS)}"
             )
         self.issuer = issuer
+        self._issuers = issuer_forms(issuer)
         self.audience = audience
         self.algorithms = algorithms
         self.leeway = leeway
@@ -96,7 +116,9 @@ class JwksTokenVerifier(TokenVerifier):
             raise jwt.InvalidAlgorithmError("alg is not allowed")
         # Checked under the lock: threads queued behind a failing fetch must see its failure
         # instead of each fetching again (PyJWKClient serializes lookups anyway).
-        with self._jwks_lock:
+        if not self._jwks_lock.acquire(timeout=JWKS_LOCK_WAIT):
+            raise jwt.PyJWKClientConnectionError("JWKS fetch in progress for too long")
+        try:
             if time.monotonic() < self._jwks_down_until:
                 raise jwt.PyJWKClientConnectionError("JWKS unreachable a moment ago, not retried")
             try:
@@ -104,12 +126,14 @@ class JwksTokenVerifier(TokenVerifier):
             except jwt.PyJWKClientConnectionError:
                 self._jwks_down_until = time.monotonic() + JWKS_DOWN_BACKOFF
                 raise
+        finally:
+            self._jwks_lock.release()
         claims = jwt.decode(
             token,
             key,
             algorithms=list(self.algorithms),
             audience=self.audience,
-            issuer=self.issuer,
+            issuer=self._issuers,
             leeway=self.leeway,
             options={"require": ["exp", "iss", "aud"]},
         )

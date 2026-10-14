@@ -1,19 +1,25 @@
 """YML adapter over the demo feed: search, filters, lookups and the index swap."""
 
+import gzip
+import http.client
 import os
 import shutil
 import sqlite3
 import threading
+import time
 import xml.etree.ElementTree as ET
+import zlib
 from decimal import Decimal
 from pathlib import Path
 
+import anyio
+import anyio.lowlevel
 import pytest
 
 from shopmcp.adapters import registry
 from shopmcp.adapters.base import AdapterContext, SearchQuery, ShopAdapter
 from shopmcp.adapters.yml import index
-from shopmcp.adapters.yml.adapter import CAPABILITIES, YmlAdapter, create
+from shopmcp.adapters.yml.adapter import CAPABILITIES, STALE_FAILURES, YmlAdapter, create
 from shopmcp.adapters.yml.feed import FeedStats, open_feed, parse, redact
 from shopmcp.adapters.yml.stem import variants
 from shopmcp.capabilities import Capability
@@ -76,6 +82,8 @@ def test_adapter_is_registered_and_declares_capabilities(tmp_path):
         ({"feed": "f.xml", "fead": "x"}, "unknown keys"),
         ({"feed": "f.xml", "refresh_minutes": -1}, "refresh_minutes"),
         ({"feed": "f.xml", "max_feed_mb": 0}, "max_feed_mb"),
+        ({"feed": "f.xml", "refresh_minutes": 60, "stale_minutes": 60}, "stale_minutes"),
+        ({"feed": "f.xml", "refresh_minutes": 0, "stale_minutes": True}, "stale_minutes"),
     ],
 )
 def test_create_rejects_bad_config(tmp_path, extra, match):
@@ -200,7 +208,7 @@ async def test_no_markup_reaches_the_core(adapter):
 def build_from(feed: Path, path: Path) -> index.BuildStats:
     stats = FeedStats()
     with open_feed(str(feed), timeout=1, max_bytes=10**7) as f:
-        return index.build(path, parse(f, stats), feed_date=lambda: stats.date)
+        return index.build(path, parse(f, stats), feed_meta=lambda: {"feed_date": stats.date or ""})
 
 
 def test_rebuild_under_an_open_reader(tmp_path):
@@ -227,7 +235,7 @@ def test_rebuild_under_an_open_reader(tmp_path):
     assert len(first) + len(cursor.fetchall()) == 39  # the old file stays readable
     reader.close()
     assert index.Index(path).search(ALL)[1] == 39
-    assert not path.with_name(path.name + ".tmp").exists()
+    assert not list(tmp_path.glob("demo.sqlite.*tmp*"))  # every build removed its temp file
 
 
 @pytest.mark.anyio
@@ -274,6 +282,250 @@ async def test_close_stops_the_refresher(tmp_path):
     assert task is not None and not task.done()
     await a.close()
     assert task.cancelled() and a._refresher is None
+
+
+# --- background refresh: the loop body itself ---------------------------------------
+
+
+def refreshing(feed: Path, tmp_path: Path) -> YmlAdapter:
+    a = YmlAdapter(str(feed), ctx(tmp_path), refresh_minutes=1)
+    a._interval = 0.01  # seconds: run the loop body now, not in a minute
+    return a
+
+
+async def until(probe, timeout: float = 5) -> None:
+    with anyio.fail_after(timeout):
+        while not await probe():
+            await anyio.sleep(0.01)
+
+
+@pytest.mark.anyio
+async def test_refresh_picks_up_the_new_feed(tmp_path):
+    feed = tmp_path / "feed.xml"
+    shutil.copy(FEED, feed)
+    a = refreshing(feed, tmp_path)
+    await a.start()
+    try:
+        assert await ids(a, q="пингвин") == []
+        text = FEED.read_text(encoding="utf-8")
+        feed.write_text(text.replace("Молоко 3,2%", "Пингвин 3,2%", 1), encoding="utf-8")
+
+        async def renamed() -> bool:
+            return bool(await ids(a, q="пингвин"))
+
+        await until(renamed)
+    finally:
+        await a.close()
+
+
+@pytest.mark.anyio
+async def test_broken_feed_keeps_the_old_index_and_the_loop(tmp_path):
+    feed = tmp_path / "feed.xml"
+    shutil.copy(FEED, feed)
+    a = refreshing(feed, tmp_path)
+    await a.start()
+    try:
+        feed.write_text("<yml_catalog><shop>", encoding="utf-8")
+
+        async def failed() -> bool:
+            return "invalid XML" in ((await a.health())["last_error"] or "")
+
+        await until(failed)
+        assert (await a.search(ALL))[1] == 39
+        assert a._refresher is not None and not a._refresher.done()
+    finally:
+        await a.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "error",
+    [
+        zlib.error("Error -3 while decompressing data: invalid code lengths set"),
+        http.client.IncompleteRead(b"partial", 100),
+        ValueError("unexpected"),
+    ],
+    ids=["zlib", "incomplete-read", "unexpected"],
+)
+async def test_refresh_survives_any_error_and_runs_again(tmp_path, error):
+    # Review P1: anything but FeedError/OSError/sqlite3.Error used to end the task silently.
+    a = refreshing(FEED, tmp_path)
+    await a.start()
+    seen: list[str | None] = []  # last_error as the next cycle starts
+
+    def flaky(path: Path) -> None:
+        seen.append(a._last_error)
+        if len(seen) == 1:
+            raise error
+
+    a._rebuild = flaky  # type: ignore[method-assign]
+    try:
+
+        async def ran_again() -> bool:
+            return len(seen) >= 2
+
+        await until(ran_again)
+        assert seen[0] is None and seen[1]  # the failure showed up before the next cycle
+        assert a._refresher is not None and not a._refresher.done()
+    finally:
+        await a.close()
+
+
+def corrupt_gz(tmp_path: Path) -> Path:
+    data = bytearray(gzip.compress(FEED.read_bytes()))
+    data[12] ^= 0xFF  # inside the first deflate block header: zlib.error, not OSError
+    path = tmp_path / "feed.xml.gz"
+    path.write_bytes(data)
+    return path
+
+
+@pytest.mark.anyio
+async def test_start_on_a_corrupt_gz_serves_the_previous_index(tmp_path):
+    a = YmlAdapter(str(FEED), ctx(tmp_path), refresh_minutes=0)
+    await a.start()
+    b = YmlAdapter(str(corrupt_gz(tmp_path)), ctx(tmp_path), refresh_minutes=0)
+    await b.start()
+    assert (await b.search(ALL))[1] == 39
+    assert "decompress" in (await b.health())["last_error"]
+
+
+@pytest.mark.anyio
+async def test_previous_index_keeps_its_feed_counts(tmp_path):
+    # Review P7: "feed_offers: 0" next to 39 products read as "the feed is empty".
+    a = YmlAdapter(str(FEED), ctx(tmp_path), refresh_minutes=0)
+    await a.start()
+    b = YmlAdapter(str(tmp_path / "missing.xml"), ctx(tmp_path), refresh_minutes=0)
+    await b.start()
+    health = await b.health()
+    assert (health["products"], health["feed_offers"], health["skipped"]) == (39, 40, 1)
+
+
+@pytest.mark.anyio
+async def test_index_of_another_schema_is_no_index(tmp_path):
+    # Review P8: after an upgrade an old index must not be served as "the previous one".
+    a = YmlAdapter(str(FEED), ctx(tmp_path), refresh_minutes=0)
+    await a.start()
+    with sqlite3.connect(a._index_path()) as db:
+        db.execute("UPDATE meta SET value = '1' WHERE key = 'schema'")
+    b = YmlAdapter(str(tmp_path / "missing.xml"), ctx(tmp_path), refresh_minutes=0)
+    with pytest.raises(Unavailable):
+        await b.start()
+
+
+def test_two_builders_on_one_data_dir(tmp_path):
+    # Review P5: a fixed "<file>.tmp" let one builder unlink the file of the other.
+    path = tmp_path / "demo.sqlite"
+    errors: list[BaseException] = []
+
+    def builder() -> None:
+        try:
+            for _ in range(5):
+                build_from(FEED, path)
+        except BaseException as e:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(e)
+
+    threads = [threading.Thread(target=builder) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert index.Index(path).search(ALL)[1] == 39
+    assert not list(tmp_path.glob("demo.sqlite.*tmp*"))
+
+
+def test_sweep_removes_only_stale_temp_files(tmp_path):
+    path = tmp_path / "demo.sqlite"
+    old, fresh = tmp_path / "demo.sqlite.a1.tmp", tmp_path / "demo.sqlite.b2.tmp"
+    old.write_bytes(b"x")
+    fresh.write_bytes(b"x")
+    os.utime(old, (0, 0))
+    index.sweep(path, older_than=3600)
+    assert not old.exists() and fresh.exists()
+
+
+# --- health: a frozen index is not healthy (review P2) --------------------------------
+
+
+def age_index(a: YmlAdapter, seconds: float) -> None:
+    with sqlite3.connect(a._index_path()) as db:
+        db.execute(
+            "UPDATE meta SET value = ? WHERE key = 'built_at'", (str(time.time() - seconds),)
+        )
+
+
+@pytest.mark.anyio
+async def test_old_index_is_stale(tmp_path):
+    a = YmlAdapter(str(FEED), ctx(tmp_path), refresh_minutes=10, stale_minutes=30)
+    a._interval = 3600  # no refresh during the test
+    await a.start()
+    try:
+        assert (await a.health())["stale"] is False
+        age_index(a, 29 * 60)
+        assert (await a.health())["stale"] is False
+        age_index(a, 31 * 60)
+        assert (await a.health())["stale"] is True
+    finally:
+        await a.close()
+
+
+@pytest.mark.anyio
+async def test_default_stale_threshold_is_three_refresh_intervals(tmp_path):
+    assert YmlAdapter(str(FEED), ctx(tmp_path), refresh_minutes=20).stale_seconds == 3600
+
+
+@pytest.mark.anyio
+async def test_no_refresh_is_never_stale(tmp_path):
+    a = YmlAdapter(str(FEED), ctx(tmp_path), refresh_minutes=0)
+    await a.start()
+    age_index(a, 10**7)
+    assert (await a.health())["stale"] is False
+
+
+@pytest.mark.anyio
+async def test_failures_in_a_row_make_the_index_stale(tmp_path):
+    feed = tmp_path / "feed.xml"
+    shutil.copy(FEED, feed)
+    a = refreshing(feed, tmp_path)
+    await a.start()
+    try:
+        feed.write_text("<yml_catalog><shop>", encoding="utf-8")
+
+        async def stale() -> bool:
+            return (await a.health())["stale"]
+
+        await until(stale)
+        assert (await a.health())["failed_refreshes"] >= STALE_FAILURES
+        shutil.copy(FEED, feed)
+
+        async def recovered() -> bool:
+            return not (await a.health())["stale"]
+
+        await until(recovered)
+        assert (await a.health())["failed_refreshes"] == 0
+    finally:
+        await a.close()
+
+
+@pytest.mark.anyio
+async def test_dead_refresher_is_stale_logged_and_does_not_fail_close(tmp_path, caplog):
+    a = refreshing(FEED, tmp_path)
+
+    async def dies(path: Path) -> None:
+        raise RuntimeError("bug")
+
+    a._refresh_loop = dies  # type: ignore[method-assign]
+    await a.start()
+
+    async def dead() -> bool:
+        return a._refresher is not None and a._refresher.done()
+
+    await until(dead)
+    await anyio.lowlevel.checkpoint()  # done callbacks run on the next loop step
+    health = await a.health()
+    assert health["stale"] is True and "RuntimeError" in health["last_error"]
+    assert "refresh task died" in caplog.text
+    await a.close()
 
 
 @pytest.mark.anyio

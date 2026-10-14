@@ -145,12 +145,13 @@ def create(cfg: AdapterConfig, ctx: AdapterContext) -> MiniAdapter:
 
 Источник истины — фид, SQLite-индекс — его кэш.
 
-- `start()` один раз строит индекс. Фоновая задача перестраивает его каждые `adapter.refresh_minutes`. Неудачное обновление оставляет прежний индекс и видно как `last_error` в `/healthz`; фатален только первый старт без пригодного индекса (`upstream_unavailable`).
+- `start()` один раз строит индекс. Фоновая задача перестраивает его каждые `adapter.refresh_minutes`. Неудачное обновление, что бы оно ни выбросило, оставляет прежний индекс и видно как `last_error` в `/healthz`; следующее обновление идёт по расписанию. Фатален только первый старт без пригодного индекса (`upstream_unavailable`); индекс, оставленный другой версией фреймворка, пригодным не считается.
+- `/healthz` отвечает `503` с `"stale": true`, если индекс старше `stale_minutes` (по умолчанию три интервала обновления), три обновления подряд упали или задача обновления остановилась. Одно чтение фида ограничено 30 минутами целиком, поэтому хост, отдающий байты по капле, роняет обновление, а не держит его.
 - Фид читается потоком, поэтому память не растёт даже на фидах в сотни мегабайт. `max_feed_mb` ограничивает размер; DTD с внутренними сущностями отклоняется.
 - Некорректное или повторяющееся предложение пропускается и учитывается в `skipped`; фид оно не останавливает.
 - Файл индекса — `$SHOPMCP_DATA_DIR/<id магазина>.sqlite`. Если в каталог писать нельзя, индекс уходит во временный каталог, а `/healthz` показывает `warning`.
 - Capabilities: `search`, `details`, `barcode`, `analogs`, `categories`, `promotions`. Нет: `pickup_points`, `share_link`, `orders`.
 - Поиск нормализует запрос и индекс русским и английским стеммерами snowball, поэтому словоформы совпадают (`молока` находит `молоко`).
-- Ключи: `feed`, `refresh_minutes`, `max_feed_mb` ([configuration.md](configuration.md#adapter)).
+- Ключи: `feed`, `refresh_minutes`, `max_feed_mb`, `stale_minutes` ([configuration.md](configuration.md#adapter)).
 
 Формат фида: стандартный `yml_catalog` с `shop/categories` и `shop/offers`; поддерживаемые элементы видны в демо-фиде [`stores/demo/feed.xml`](../../stores/demo/feed.xml) (`url`, `price`, `oldprice`, `currencyId`, `categoryId`, `picture`, `name` либо `typePrefix`+`vendor`+`model`, `vendor`, `barcode`, `description`, `param`, атрибут `available`).

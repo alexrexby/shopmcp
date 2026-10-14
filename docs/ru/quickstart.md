@@ -64,7 +64,7 @@ curl -s localhost:8000/healthz
 ```
 
 ```json
-{"status":"ok","store":"demo","feed_offers":40,"skipped":1,"last_error":null,"warning":null,"products":39,"categories":6,"feed_date":"2026-10-13T09:00:00+03:00","index_age_seconds":3}
+{"status":"ok","store":"demo","last_error":null,"failed_refreshes":0,"warning":null,"products":39,"categories":6,"feed_offers":40,"skipped":1,"feed_date":"2026-10-13T09:00:00+03:00","index_age_seconds":3,"stale":false}
 ```
 
 Сервер без состояния и отвечает JSON-ом; до MCP-пути доходит только `POST` (на `GET` приходит `405`). Список инструментов:
@@ -118,8 +118,9 @@ C10  ok   response budget, facets                  max 8828 bytes of 24000
 C11  ok   cart handoff                             url_template
 C12  ok   no held-open streams, no 500             GET 405, no listen stream
 C13  skip auth: 401, RFC 9728                      auth disabled
-C14  ok   rate limit                               429 at request 34 (earlier checks spent part of the bucket)
-13 ok, 0 failed, 1 skipped
+C15  ok   CORS by allowed_origins                  CORS off
+C14  ok   rate limit                               429 at request 33 (earlier checks spent part of the bucket)
+14 ok, 0 failed, 1 skipped
 ```
 
 `check` сам поднимает магазин на свободном локальном порту с временным индексом, поэтому запущенный `serve` не мешает. Код возврата `0`, если ничего не упало, иначе `1`. Что проверяет каждая проверка: [conformance.md](conformance.md).
@@ -201,4 +202,4 @@ docker compose down -v
 
 ## Где лежит индекс
 
-Адаптер `yml` хранит SQLite-индекс в `$SHOPMCP_DATA_DIR/<id магазина>.sqlite` (по умолчанию `./data`). У `serve` и `index` значение `SHOPMCP_DATA_DIR` должно совпадать. Индекс — это кэш: фоновая задача перестраивает его каждые `adapter.refresh_minutes`; неудачное обновление не мешает работе на прежнем индексе и отражается полем `last_error` в `/healthz`.
+Адаптер `yml` хранит SQLite-индекс в `$SHOPMCP_DATA_DIR/<id магазина>.sqlite` (по умолчанию `./data`). У `serve` и `index` значение `SHOPMCP_DATA_DIR` должно совпадать. Индекс — это кэш: фоновая задача перестраивает его каждые `adapter.refresh_minutes`; неудачное обновление не мешает работе на прежнем индексе и отражается полем `last_error` в `/healthz`; индекс старше `adapter.stale_minutes` переводит `/healthz` в `503`.

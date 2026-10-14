@@ -24,6 +24,7 @@ rate_per_minute = 60
 [server]
 path = "/mcp"
 public_url = "http://localhost:8000/mcp"
+allowed_origins = ["https://app.broken.example"]  # so C15 checks the allowed side too
 
 [auth]
 enabled = true                                # so C13 runs, not skips

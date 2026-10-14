@@ -48,6 +48,7 @@ The server `instructions` are assembled from: an intro (`instructions.intro`), y
 | `feed` | `https://` URL or a path; a relative path starts at the directory of `store.toml`, not the current directory | required |
 | `refresh_minutes` | How often the index is rebuilt in the background; `0` disables the refresh | `60` |
 | `max_feed_mb` | Feed size limit in megabytes; a larger feed is refused | `200` |
+| `stale_minutes` | An index older than this is stale: `/healthz` answers `503`. Must be above `refresh_minutes`; ignored when `refresh_minutes = 0` | `3 × refresh_minutes` |
 
 Any other key under `[adapter]` with `kind = "yml"` is an error.
 
@@ -89,10 +90,12 @@ The limits are written into the tool schemas and descriptions, so the model sees
 | `port` | Port, 1-65535 | `8000` |
 | `public_url` | Public URL of the endpoint. It is the protected resource in RFC 9728 and the required token audience | required |
 | `allowed_hosts` | Accepted `Host` header values (DNS-rebinding protection); `*` as the port wildcard | `["localhost:*", "127.0.0.1:*"]` |
-| `allowed_origins` | Accepted `Origin` header values | `[]` |
+| `allowed_origins` | Accepted `Origin` header values; `*` as the port wildcard (`http://localhost:*`). A non-empty list also turns on CORS on the MCP path for these origins, for browser clients | `[]` |
 | `trusted_proxies` | Addresses or networks whose `X-Forwarded-For` is trusted for the rate limit | `[]` |
 
 Behind a reverse proxy: add the public host (e.g. `"mcp.shop.example"`) to `allowed_hosts`, set `public_url` to the public address, and list the proxy in `trusted_proxies`. Without `trusted_proxies` all requests look like they come from the proxy and share one rate-limit bucket. `X-Forwarded-For` is read right to left up to the first address that is not trusted. IPv6 clients are limited per /64.
+
+CORS: with `allowed_origins` empty (the default) a browser on another origin cannot call the endpoint; server-side clients do not need CORS. A listed origin gets `204` on the preflight and `Access-Control-Allow-Origin` with its own value on every answer of the MCP path, `401`, `403` and `429` included. Allowed request headers are `content-type`, `authorization`, `last-event-id` and `mcp-*`. `*` is never sent and credentials (cookies) are not allowed: the token goes in `Authorization`.
 
 The server answers `POST` only on `path`; `GET` returns `405`, and no stream is ever held open.
 
@@ -101,7 +104,7 @@ The server answers `POST` only on `path`; `GET` returns `405`, and no stream is 
 | Field | Purpose | Default |
 |---|---|---|
 | `enabled` | Turn token verification on | `false` |
-| `issuer` | Expected `iss` of the token and the authorization server advertised in the metadata | empty |
+| `issuer` | Expected `iss` of the token and the authorization server advertised in the metadata. A bare host matches with and without the trailing slash, see [auth.md](auth.md) | empty |
 | `jwks_uri` | URL of the authorization server's key set | empty |
 | `tool_scopes` | Table `tool suffix = ["scope", ...]`: scopes required to call the tool; overrides the tool's default. A list must not be empty | `{}` |
 

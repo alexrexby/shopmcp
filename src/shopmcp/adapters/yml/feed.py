@@ -6,10 +6,13 @@ it never stops the whole feed.
 """
 
 import gzip
+import http.client
 import re
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zlib
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -30,6 +33,9 @@ MAX_OFFER_NODES = 10_000  # elements inside one <offer>; more is not a product, 
 _INTERNAL_DTD = re.compile(rb"<!DOCTYPE[^>]*\[|<!ENTITY")
 _BARCODE = re.compile(r"^\d{8,14}$")
 _CURRENCY_ALIASES = {"RUR": "RUB"}
+# Transport and decompression failures that are not OSError: a connection cut inside a
+# chunked body (IncompleteRead) and a corrupt deflate stream (zlib.error).
+_READ_ERRORS = (OSError, EOFError, zlib.error, http.client.HTTPException)
 
 
 class FeedError(Exception):
@@ -44,12 +50,18 @@ class FeedStats:
 
 
 class _Capped:
-    """Read-through wrapper that fails once more than `limit` bytes went through."""
+    """Read-through wrapper that fails once more than `limit` bytes went through or, with
+    `seconds`, once the whole read takes longer: the socket timeout is per operation, so a
+    host trickling bytes would otherwise hold a rebuild for hours."""
 
-    def __init__(self, raw: BinaryIO, limit: int, what: str) -> None:
+    def __init__(self, raw: BinaryIO, limit: int, what: str, seconds: float | None = None) -> None:
         self._raw, self._limit, self._what, self._seen = raw, limit, what, 0
+        self._seconds = seconds
+        self._deadline = None if seconds is None else time.monotonic() + seconds
 
     def read(self, n: int = -1) -> bytes:
+        if self._deadline is not None and time.monotonic() > self._deadline:
+            raise FeedError(f"{self._what} download exceeded {self._seconds:g} s")
         data = self._raw.read(n)
         self._seen += len(data)
         if self._seen > self._limit:
@@ -71,8 +83,11 @@ def redact(source: str) -> str:
 
 
 @contextmanager
-def open_feed(source: str, *, timeout: float, max_bytes: int) -> Iterator[BinaryIO]:
-    """Open a local path or an https URL; `.gz` is decompressed, both sizes are capped."""
+def open_feed(
+    source: str, *, timeout: float, max_bytes: int, max_seconds: float | None = None
+) -> Iterator[BinaryIO]:
+    """Open a local path or an https URL; `.gz` is decompressed, both sizes are capped;
+    `max_seconds` bounds the whole read, `timeout` only one socket operation."""
     scheme = urllib.parse.urlsplit(source).scheme.lower()
     gz = urllib.parse.urlsplit(source).path.endswith(".gz")
     with ExitStack() as stack:
@@ -90,7 +105,10 @@ def open_feed(source: str, *, timeout: float, max_bytes: int) -> Iterator[Binary
                 raise FeedError(f"unsupported feed source scheme {scheme!r}: use a path or https")
         except OSError as e:
             raise FeedError(f"cannot open feed: {e}") from e
-        stream: BinaryIO = _Capped(raw, max_bytes, "feed")  # type: ignore[assignment]
+        except http.client.HTTPException as e:
+            # Class only: InvalidURL quotes the URL, query (a ${ENV} secret) included.
+            raise FeedError(f"cannot open feed: {type(e).__name__}") from e
+        stream: BinaryIO = _Capped(raw, max_bytes, "feed", max_seconds)  # type: ignore[assignment]
         if gz:
             # The cap applies after decompression too: a small archive can unpack huge.
             unpacked = gzip.GzipFile(fileobj=stream)  # type: ignore[arg-type]
@@ -116,7 +134,7 @@ def parse(stream: BinaryIO, stats: FeedStats) -> Iterator[Category | Product]:
         while True:
             try:
                 chunk = stream.read(_CHUNK)
-            except (OSError, EOFError) as e:  # gzip errors are OSError/EOFError
+            except _READ_ERRORS as e:
                 raise FeedError(f"cannot read feed: {e}") from e
             if head:
                 if _INTERNAL_DTD.search(chunk[:_PROLOG]):
