@@ -17,10 +17,13 @@ from shopmcp.conformance.checks import CheckResult, Expect, run
 START_TIMEOUT = 60.0  # seconds: a local start indexes the feed first
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def bound_socket() -> socket.socket:
+    """A socket already bound to a free 127.0.0.1 port. Handed to uvicorn as is: asking
+    for a free port number and binding it later races with any other process doing the
+    same (two test runs side by side)."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    return sock
 
 
 @contextmanager
@@ -28,12 +31,12 @@ def serve(app: ASGIApp) -> Iterator[str]:
     """`app` under uvicorn on 127.0.0.1:<free port> in a thread; yields the base URL."""
     import uvicorn
 
+    sock = bound_socket()
+    port = sock.getsockname()[1]
     server = uvicorn.Server(
-        uvicorn.Config(
-            app, host="127.0.0.1", port=_free_port(), log_level="warning", proxy_headers=False
-        )
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", proxy_headers=False)
     )
-    thread = threading.Thread(target=server.run, daemon=True)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
     try:
         deadline = time.monotonic() + START_TIMEOUT
@@ -41,10 +44,11 @@ def serve(app: ASGIApp) -> Iterator[str]:
             if not thread.is_alive() or time.monotonic() > deadline:
                 raise RuntimeError("the local server did not start (see the log above)")
             time.sleep(0.05)
-        yield f"http://127.0.0.1:{server.config.port}"
+        yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        sock.close()
 
 
 @contextmanager

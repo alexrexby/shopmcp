@@ -2,7 +2,10 @@
 
 `start()` builds the index once; a background task rebuilds it every
 `refresh_minutes`. A failed refresh keeps serving the previous index and shows
-up in `health()`; only a first start with no usable index at all is fatal.
+up in `health()`; only a first start with no index file at all is fatal. An index
+file of another schema version (left by the previous release) is not served, but
+does not stop the start either: the server comes up with /healthz at 503 and the
+build is retried in the background until the feed answers.
 Whatever a rebuild raises, the refresh goes on: a task that dies quietly would leave
 the store selling yesterday's prices behind a green health check.
 """
@@ -46,6 +49,7 @@ CAPABILITIES = frozenset(
 _KEYS = {"feed", "refresh_minutes", "max_feed_mb", "stale_minutes"}
 FEED_SECONDS = 30 * 60  # one whole feed read; the socket timeout bounds a single operation
 STALE_FAILURES = 3  # refreshes failed in a row that make the index stale
+NO_INDEX_RETRY = 60.0  # seconds between builds while there is no index to serve
 # Expected failures carry a curated message; anything else shows only its type in health().
 _EXPECTED = (FeedError, OSError, sqlite3.Error)
 
@@ -65,6 +69,7 @@ class YmlAdapter(AdapterBase):
         self.ctx = ctx
         self.refresh_minutes = refresh_minutes
         self._interval = refresh_minutes * 60.0  # seconds between refreshes; tests shorten it
+        self._retry = NO_INDEX_RETRY  # the same while no index is served; tests shorten it
         # An index older than this is stale: /healthz answers 503.
         self.stale_seconds = (stale_minutes or 3 * refresh_minutes) * 60
         self.max_bytes = max_feed_mb * 1024 * 1024
@@ -80,6 +85,7 @@ class YmlAdapter(AdapterBase):
     async def start(self) -> None:
         path = self._index_path()
         index.sweep(path, older_than=2 * FEED_SECONDS)
+        existed = path.exists()  # before the build: a failed build leaves no file behind
         try:
             await anyio.to_thread.run_sync(self._rebuild, path)
         except Exception as e:
@@ -90,11 +96,18 @@ class YmlAdapter(AdapterBase):
                 if usable
                 else "first index build failed",
             )
-            if not usable:
+            if not usable and not existed:
                 log.error("feed %s: no usable index to serve", self._label)
                 raise Unavailable() from e
-        self.index = index.Index(path)
-        if self.refresh_minutes > 0:
+            if not usable:
+                # Review P8: an upgrade must not keep the server down while the feed is.
+                log.error(
+                    "feed %s: index of another schema version, not served; retrying the build",
+                    self._label,
+                )
+        if index.usable(path):
+            self.index = index.Index(path)
+        if self.refresh_minutes > 0 or self.index is None:
             self._refresher = asyncio.create_task(self._refresh_loop(path))
             self._refresher.add_done_callback(self._refresher_done)
 
@@ -122,6 +135,10 @@ class YmlAdapter(AdapterBase):
             out["stale"] = self.refresh_minutes > 0 and (
                 age > self.stale_seconds or self._failures >= STALE_FAILURES or dead
             )
+        elif self._refresher is not None:
+            # Started without an index (another schema version): nothing to sell yet.
+            out["stale"] = True
+            out["index"] = "none: the build for this version has not succeeded yet"
         return out
 
     async def search(self, q: SearchQuery) -> tuple[list[Product], int, Facets]:
@@ -209,13 +226,21 @@ class YmlAdapter(AdapterBase):
             log.exception("feed %s: %s: unexpected %s", self._label, what, type(e).__name__)
 
     async def _refresh_loop(self, path: Path) -> None:
-        """Ends only by cancellation: every failure is recorded and the next cycle runs."""
+        """Ends by cancellation, or once the missing index is built when there is no
+        refresh: every failure is recorded and the next cycle runs."""
         while True:
-            await anyio.sleep(self._interval)
+            await anyio.sleep(self._interval if self.index is not None else self._retry)
             try:
                 await anyio.to_thread.run_sync(self._rebuild, path)
             except Exception as e:  # noqa: BLE001 - see the module docstring
-                self._failed(e, "refresh failed, keeping the old index")
+                kept = "keeping the old index" if self.index is not None else "nothing served"
+                self._failed(e, f"refresh failed, {kept}")
+                continue
+            if self.index is None:
+                self.index = index.Index(path)
+                log.info("feed %s: index built, serving", self._label)
+                if self.refresh_minutes == 0:
+                    return
 
     def _refresher_done(self, task: asyncio.Task[None]) -> None:
         # The loop catches everything; this is the alarm for whatever still gets through.

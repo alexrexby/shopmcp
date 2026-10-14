@@ -400,16 +400,39 @@ async def test_previous_index_keeps_its_feed_counts(tmp_path):
     assert (health["products"], health["feed_offers"], health["skipped"]) == (39, 40, 1)
 
 
+@pytest.mark.parametrize("refresh", [0, 1])
 @pytest.mark.anyio
-async def test_index_of_another_schema_is_no_index(tmp_path):
-    # Review P8: after an upgrade an old index must not be served as "the previous one".
+async def test_index_of_another_schema_is_not_served_nor_fatal(tmp_path, refresh):
+    # Review P8: after an upgrade an old index must not be served as "the previous one",
+    # and a feed that is down at that moment must not keep the server down: it starts
+    # with /healthz at 503 and builds the index in the background once the feed is back.
     a = YmlAdapter(str(FEED), ctx(tmp_path), refresh_minutes=0)
     await a.start()
     with sqlite3.connect(a._index_path()) as db:
         db.execute("UPDATE meta SET value = '1' WHERE key = 'schema'")
-    b = YmlAdapter(str(tmp_path / "missing.xml"), ctx(tmp_path), refresh_minutes=0)
-    with pytest.raises(Unavailable):
-        await b.start()
+    feed = tmp_path / "feed.xml"  # not there yet
+    b = YmlAdapter(str(feed), ctx(tmp_path), refresh_minutes=refresh)
+    b._retry = 0.01
+    b._interval = 3600  # once built, no refresh during the test
+    await b.start()
+    try:
+        health = await b.health()
+        assert health["stale"] is True and "none" in health["index"]
+        assert health["last_error"] and health["failed_refreshes"] >= 1
+        with pytest.raises(Unavailable):
+            await b.search(ALL)
+        shutil.copy(FEED, feed)
+
+        async def served() -> bool:
+            return b.index is not None
+
+        await until(served)
+        assert (await b.search(ALL))[1] == 39
+        health = await b.health()
+        assert health["stale"] is False and "index" not in health
+        assert health["failed_refreshes"] == 0 and health["last_error"] is None
+    finally:
+        await b.close()
 
 
 def test_two_builders_on_one_data_dir(tmp_path):

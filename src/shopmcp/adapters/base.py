@@ -14,6 +14,7 @@ from mcp.server.auth.provider import AccessToken
 from pydantic import HttpUrl
 
 from shopmcp.capabilities import Capability
+from shopmcp.cart.refs import CartRef
 from shopmcp.domain.models import (
     CartLine,
     Category,
@@ -63,6 +64,8 @@ class ShopAdapter(Protocol):
         self, city: str | None, page: int, limit: int
     ) -> tuple[list[PickupPoint], int]: ...
     async def create_share_link(self, lines: Sequence[CartLine]) -> HttpUrl: ...
+    # Product.id -> what the store's cart is keyed by; ids come from get_products.
+    async def cart_refs(self, ids: Sequence[str]) -> dict[str, CartRef]: ...
     async def orders(
         self, token: AccessToken, page: int, limit: int
     ) -> tuple[list[Order], int]: ...
@@ -111,6 +114,10 @@ class AdapterBase:
 
     async def create_share_link(self, lines: Sequence[CartLine]) -> HttpUrl:
         raise NotSupported()
+
+    async def cart_refs(self, ids: Sequence[str]) -> dict[str, CartRef]:
+        # The feed id is the cart key: right for most stores, a feed adapter may derive more.
+        return {i: CartRef(product_id=i) for i in ids}
 
     async def orders(self, token: AccessToken, page: int, limit: int) -> tuple[list[Order], int]:
         raise NotSupported()

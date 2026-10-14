@@ -1,24 +1,35 @@
 """Stage 0 frozen contracts: stage-1 modules are built against exactly these."""
 
+import asyncio
 import inspect
 import json
 import re
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, get_args
 
 import pytest
 from fakes import FakeAdapter, make_product
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ToolAnnotations
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from shopmcp import i18n
 from shopmcp.adapters import registry
 from shopmcp.adapters.base import AdapterBase, AdapterContext, SearchQuery, ShopAdapter
 from shopmcp.capabilities import Capability
-from shopmcp.config import AdapterConfig, ConfigError, load
-from shopmcp.domain.models import PageMeta, Product, ProductPage, ProductSummary
+from shopmcp.cart.refs import CartRef
+from shopmcp.cart.strategies import CartKind
+from shopmcp.config import (
+    AdapterConfig,
+    ConfigError,
+    FormPostCart,
+    LinkListCart,
+    StoreConfig,
+    load,
+)
+from shopmcp.domain.models import CartHandoff, PageMeta, Product, ProductPage, ProductSummary
 from shopmcp.domain.text import clean_text
+from shopmcp.engines import CART_SECRET, PRESETS, Engine
 from shopmcp.envelope import fail, ok
 from shopmcp.errors import InvalidInput, NotFound, NotSupported, ShopError, Unavailable
 from shopmcp.i18n import L10n, Texts
@@ -37,7 +48,7 @@ PROTOCOL_METHODS = [
 
 
 def test_protocol_lists_every_method():
-    assert len(PROTOCOL_METHODS) == 13
+    assert len(PROTOCOL_METHODS) == 14
 
 
 def test_fake_adapter_satisfies_protocol():
@@ -153,6 +164,214 @@ def test_config_error_does_not_echo_secret(tmp_path, monkeypatch):
 def test_url_template_requires_items_placeholder(tmp_path):
     with pytest.raises(ConfigError, match="url_template"):
         load(_write(tmp_path, _variant("cart/add?{items}", "cart/add")))
+
+
+SECRET_ENV = "SHOPMCP_CART_SECRET"
+FORM_POST = """[cart]
+strategy = "form_post"
+mode = "single"
+action = "https://demo.example/cart_items"
+fields = [["variant_ids[{id}]", "{qty}"]]
+secret = "${SHOPMCP_CART_SECRET}"
+"""
+
+
+def _cart(tmp_path: Path, cart: str) -> Path:
+    src = DEMO.read_text(encoding="utf-8")
+    start, end = src.index("[cart]"), src.index("[limits]")
+    return _write(tmp_path, src[:start] + cart + "\n" + src[end:])
+
+
+def test_cart_handoff_kinds_are_frozen():
+    kinds = CartHandoff.model_json_schema()["properties"]["kind"]["enum"]
+    assert (
+        sorted(kinds)
+        == sorted(get_args(CartKind))
+        == sorted(
+            ["share_link", "url_template", "json_fragment", "form_post", "receiver", "link_list"]
+        )
+    )
+
+
+def test_cart_without_strategy_is_a_link_list(tmp_path):
+    assert isinstance(load(_cart(tmp_path, "[cart]")).cart, LinkListCart)
+    assert isinstance(load(_cart(tmp_path, "")).cart, LinkListCart)
+
+
+def test_unknown_cart_key_is_rejected(tmp_path):
+    # Each strategy has its own fields: a url_template key under link_list is a typo.
+    with pytest.raises(ConfigError, match="url_template"):
+        load(_cart(tmp_path, '[cart]\nstrategy = "link_list"\nurl_template = "x{items}"'))
+
+
+def test_form_post_secret_comes_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv(SECRET_ENV, "s" * 32)
+    cart = load(_cart(tmp_path, FORM_POST)).cart
+    assert isinstance(cart, FormPostCart) and cart.secret.get_secret_value() == "s" * 32
+    assert "s" * 32 not in repr(cart)
+
+
+def test_secret_literal_in_the_file_is_an_error(tmp_path):
+    literal = FORM_POST.replace("${SHOPMCP_CART_SECRET}", "s" * 40)
+    with pytest.raises(ConfigError, match="cart.secret") as e:
+        load(_cart(tmp_path, literal))
+    assert "s" * 40 not in str(e.value)
+    with pytest.raises(ConfigError, match="cart.secret"):
+        load(_cart(tmp_path, FORM_POST.replace("${SHOPMCP_CART_SECRET}", "x${A}")))
+
+
+def test_short_secret_is_an_error(tmp_path, monkeypatch):
+    monkeypatch.setenv(SECRET_ENV, "s" * 31)
+    with pytest.raises(ConfigError, match="32 bytes") as e:
+        load(_cart(tmp_path, FORM_POST))
+    assert "s" * 31 not in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "url, ok",
+    [
+        ("https://demo.example/cart_items", True),
+        ("https://mcp.demo.example/cart_items", True),
+        ("https://evil.example/cart_items", False),
+        ("https://demo.example.evil.example/cart_items", False),
+        ("https://evildemo.example/cart_items", False),
+    ],
+)
+def test_form_post_action_stays_on_the_site(tmp_path, monkeypatch, url, ok):
+    monkeypatch.setenv(SECRET_ENV, "s" * 32)
+    path = _cart(tmp_path, FORM_POST.replace("https://demo.example/cart_items", url))
+    if ok:
+        assert str(load(path).cart.action) == url
+    else:
+        with pytest.raises(ConfigError, match="cart.action: host must be demo.example"):
+            load(path)
+
+
+SECRET = 'secret = "${SHOPMCP_CART_SECRET}"'
+CHAIN = ('strategy = "form_post"', 'mode = "chain"', 'action = "https://demo.example/add"')
+SINGLE = ('strategy = "form_post"', 'mode = "single"', 'action = "https://demo.example/add"')
+TEMPLATE = 'item_template = "{id}"'
+
+
+@pytest.mark.parametrize(
+    "cart, field",
+    [
+        (
+            (
+                'strategy = "url_template"',
+                'url_template = "https://evil.example/c?{items}"',
+                TEMPLATE,
+            ),
+            "url_template",
+        ),
+        (
+            ('strategy = "url_template"', 'url_template = "javascript:{items}"', TEMPLATE),
+            "url_template",
+        ),
+        (('line_template = "https://evil.example/?add={id}"',), "line_template"),
+        (
+            ('strategy = "json_fragment"', 'url_template = "https://evil.example/#{payload}"'),
+            "url_template",
+        ),
+        (
+            ('strategy = "receiver"', 'url_template = "https://evil.example/?t={token}"', SECRET),
+            "url_template",
+        ),
+        (
+            (*CHAIN, 'fields = [["id", "{id}"]]', 'finish_url = "https://evil.example/c"', SECRET),
+            "finish_url",
+        ),
+    ],
+)
+def test_every_cart_url_stays_on_the_site(tmp_path, monkeypatch, cart, field):
+    monkeypatch.setenv(SECRET_ENV, "s" * 32)
+    with pytest.raises(ConfigError, match=f"cart.{field}: host"):
+        load(_cart(tmp_path, "\n".join(("[cart]", *cart))))
+
+
+def test_line_template_from_the_product_page_is_allowed(tmp_path):
+    cart = load(_cart(tmp_path, '[cart]\nline_template = "{url}?action=ADD2BASKET&id={id}"'))
+    assert cart.cart.line_template.startswith("{url}")
+
+
+@pytest.mark.parametrize(
+    "cart, match",
+    [
+        (('line_template = "https://demo.example/?q={qty}"',), "line_template must contain"),
+        (('strategy = "json_fragment"', 'url_template = "https://demo.example/#x"'), "{payload}"),
+        (('strategy = "receiver"', 'url_template = "https://demo.example/r"', SECRET), "{token}"),
+        ((*CHAIN, 'fields = [["id", "{id}"]]', SECRET), "finish_url"),
+        ((*SINGLE, 'fields = [["qty", "{qty}"]]', SECRET), "fields must"),
+        ((*SINGLE, "fields = []", SECRET), "fields"),
+        (('strategy = "nope"',), "strategy|tag"),
+    ],
+)
+def test_incomplete_cart_is_rejected(tmp_path, monkeypatch, cart, match):
+    monkeypatch.setenv(SECRET_ENV, "s" * 32)
+    with pytest.raises(ConfigError, match=match):
+        load(_cart(tmp_path, "\n".join(("[cart]", *cart))))
+
+
+SCAFFOLD = {
+    "{host}": "shop.example",
+    "{feed}": "https://shop.example/feed.xml",
+    "{cart_path}": "cart",
+}
+
+
+def _scaffold(value: object) -> object:
+    if isinstance(value, str):
+        for k, v in SCAFFOLD.items():
+            value = value.replace(k, v)
+        return value
+    if isinstance(value, list):
+        return [_scaffold(v) for v in value]
+    return value
+
+
+@pytest.mark.parametrize("engine", list(Engine))
+def test_every_engine_preset_is_a_valid_cart(engine, monkeypatch):
+    monkeypatch.setenv(SECRET_ENV, "s" * 32)
+    preset = PRESETS[engine]
+    data = load(DEMO).model_dump(mode="json")
+    data["site"] = "https://shop.example"
+    for cart in filter(None, [preset.cart, preset.alt_cart]):
+        rendered = {k: _scaffold(v) for k, v in cart.items()}
+        if rendered.get("secret") == CART_SECRET:
+            rendered["secret"] = "s" * 32  # what load() substitutes for ${...}
+        cfg = StoreConfig.model_validate({**data, "cart": rendered})
+        assert cfg.cart.strategy == cart["strategy"]
+    assert preset.engine == engine and preset.notes.ru and preset.notes.en
+    if preset.adapter is not None:
+        assert preset.adapter["kind"] in registry.kinds()
+
+
+def test_adapter_base_cart_refs_default_to_the_feed_id():
+    refs = asyncio.run(AdapterBase().cart_refs(["1", "a-2"]))
+    assert refs == {"1": CartRef(product_id="1"), "a-2": CartRef(product_id="a-2")}
+    assert refs["1"].id == "1" and CartRef(product_id="1", variant_id="7").id == "7"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"product_id": "a b"},
+        {"product_id": "<x>"},
+        {"product_id": ""},
+        {"product_id": "x" * 129},
+        {"product_id": "1", "variant_id": 'a"b'},
+        {"product_id": "1", "options": {str(i): "v" for i in range(21)}},
+        {"product_id": "1", "options": {"Size": "v" * 201}},
+        {"product_id": "1", "extra": "x"},
+    ],
+)
+def test_cart_ref_rejects_what_cannot_go_into_a_form_or_url(bad):
+    with pytest.raises(ValidationError):
+        CartRef(**bad)
+
+
+def test_registry_knows_the_new_kinds():
+    assert {"feed", "woocommerce"} <= registry.kinds()
 
 
 # --- envelope ----------------------------------------------------------------

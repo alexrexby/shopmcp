@@ -7,14 +7,27 @@ variable fails the start instead of silently becoming an empty string.
 import os
 import re
 import tomllib
+import urllib.parse
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    HttpUrl,
+    SecretStr,
+    Tag,
+    ValidationError,
+    model_validator,
+)
 
 from shopmcp.i18n import Locale
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_SECRET_KEYS = ("secret",)  # in [cart]: must be exactly one ${ENV} reference
 _TEXT_KEY = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
 
@@ -33,20 +46,144 @@ class AdapterConfig(BaseModel):
     kind: str
 
 
-class CartConfig(Section):
-    strategy: Literal["share_link", "url_template", "link_list"] = "link_list"
-    url_template: str | None = None  # "https://shop.ru/cart/add?{items}"
-    item_template: str | None = None  # "id[]={id}&qty[]={qty}"
+# A cart line needs one of these to name its product (`{variant_id}` alone may be empty).
+_ID_PLACEHOLDERS = ("{id}", "{product_id}")
+MIN_SECRET_BYTES = 32
+
+
+def _has_id(template: str) -> bool:
+    return any(p in template for p in _ID_PLACEHOLDERS)
+
+
+def _strong_secret(v: SecretStr) -> SecretStr:
+    if len(v.get_secret_value().encode()) < MIN_SECRET_BYTES:
+        raise ValueError(f"must be at least {MIN_SECRET_BYTES} bytes")
+    return v
+
+
+# Signs cart tokens. Only from `${ENV}`: `load()` refuses a literal in the file.
+CartSecret = Annotated[SecretStr, AfterValidator(_strong_secret)]
+TokenTtl = Annotated[int, Field(ge=5, le=10080)]  # minutes a signed cart link lives
+
+
+class LinkListCart(Section):
+    """Product page links; with `line_template` every line also gets an add-to-cart link."""
+
+    strategy: Literal["link_list"] = "link_list"
+    line_template: str | None = None  # "{url}?action=ADD2BASKET&id={id}&quantity={qty}"
+
+    @model_validator(mode="after")
+    def _template_complete(self) -> "LinkListCart":
+        if self.line_template is not None and not _has_id(self.line_template):
+            raise ValueError("cart.line_template must contain {id} or {product_id}")
+        return self
+
+
+class UrlTemplateCart(Section):
+    strategy: Literal["url_template"]
+    url_template: str  # "https://shop.ru/cart/add?{items}"
+    item_template: str  # "id[]={id}&qty[]={qty}"
     item_separator: str = "&"
 
     @model_validator(mode="after")
-    def _template_complete(self) -> "CartConfig":
-        if self.strategy == "url_template":
-            if not self.url_template or "{items}" not in self.url_template:
-                raise ValueError("cart.url_template must contain {items}")
-            if not self.item_template or "{id}" not in self.item_template:
-                raise ValueError("cart.item_template must contain {id}")
+    def _template_complete(self) -> "UrlTemplateCart":
+        if "{items}" not in self.url_template:
+            raise ValueError("cart.url_template must contain {items}")
+        if not _has_id(self.item_template):
+            raise ValueError("cart.item_template must contain {id} or {product_id}")
         return self
+
+
+class JsonFragmentCart(Section):
+    """The storefront script reads the cart from the URL fragment (Ecwid)."""
+
+    strategy: Literal["json_fragment"]
+    url_template: str  # "https://shop.ru/#!/~/cart/create={payload}"
+    payload_encoding: Literal["uri", "base64"] = "uri"
+
+    @model_validator(mode="after")
+    def _template_complete(self) -> "JsonFragmentCart":
+        if "{payload}" not in self.url_template:
+            raise ValueError("cart.url_template must contain {payload}")
+        return self
+
+
+class FormPostCart(Section):
+    """Our trampoline page POSTs the lines to the store: one form, or a chain of them."""
+
+    strategy: Literal["form_post"]
+    action: HttpUrl  # "https://shop.ru/cart_items"
+    mode: Literal["single", "chain"]
+    # Form field name -> value, both templates; a field rendered empty is not sent.
+    fields: Annotated[list[tuple[str, str]], Field(min_length=1, max_length=10)]
+    finish_url: HttpUrl | None = None  # where a chain ends: the cart page
+    secret: CartSecret
+    ttl_minutes: TokenTtl = 1440
+
+    @model_validator(mode="after")
+    def _form_complete(self) -> "FormPostCart":
+        if not any(_has_id(name) or _has_id(value) for name, value in self.fields):
+            raise ValueError("cart.fields must contain {id} or {product_id}")
+        if self.mode == "chain" and self.finish_url is None:
+            raise ValueError("cart.finish_url is required for mode = 'chain'")
+        return self
+
+
+class ReceiverCart(Section):
+    """Our module on the store site takes a signed token and fills the cart."""
+
+    strategy: Literal["receiver"]
+    url_template: str  # "https://shop.ru/mcp/cart/?mcp_cart={token}"
+    secret: CartSecret
+    key_id: str = Field("1", pattern=r"^[A-Za-z0-9._-]{1,32}$")
+    ttl_minutes: TokenTtl = 1440
+
+    @model_validator(mode="after")
+    def _template_complete(self) -> "ReceiverCart":
+        if "{token}" not in self.url_template:
+            raise ValueError("cart.url_template must contain {token}")
+        return self
+
+
+class ShareLinkCart(Section):
+    strategy: Literal["share_link"]
+
+
+def _cart_strategy(value: Any) -> str:
+    # `[cart]` without `strategy` stays a link list, as before the union.
+    if isinstance(value, dict):
+        return str(value.get("strategy", "link_list"))
+    return str(getattr(value, "strategy", ""))
+
+
+CartConfig = Annotated[
+    Annotated[LinkListCart, Tag("link_list")]
+    | Annotated[UrlTemplateCart, Tag("url_template")]
+    | Annotated[JsonFragmentCart, Tag("json_fragment")]
+    | Annotated[FormPostCart, Tag("form_post")]
+    | Annotated[ReceiverCart, Tag("receiver")]
+    | Annotated[ShareLinkCart, Tag("share_link")],
+    Discriminator(_cart_strategy),
+]
+
+
+def _cart_urls(cart: Any) -> list[tuple[str, str]]:
+    """(field, URL) of every cart link the config can produce; each must stay on the site."""
+    urls = []
+    for name in ("url_template", "line_template", "action", "finish_url"):
+        value = getattr(cart, name, None)
+        # A line template from `{url}` starts at the product page, which the feed owns.
+        if value is not None and not str(value).startswith("{url}"):
+            urls.append((name, str(value)))
+    return urls
+
+
+def _on_site(url: str, site: str) -> bool:
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme not in ("http", "https") or not host or not site:
+        return False
+    return host == site or host.endswith("." + site)
 
 
 class LimitsConfig(Section):
@@ -103,7 +240,7 @@ class StoreConfig(Section):
     payment: str | None = None
     regions: list[str] = []
     adapter: AdapterConfig
-    cart: CartConfig = CartConfig()
+    cart: CartConfig = LinkListCart()
     limits: LimitsConfig = LimitsConfig()
     server: ServerConfig
     auth: AuthConfig = AuthConfig()
@@ -116,6 +253,15 @@ class StoreConfig(Section):
         bad = [k for k in self.texts if not re.match(_TEXT_KEY, k)]
         if bad:
             raise ValueError(f"texts: malformed keys {bad}")
+        return self
+
+    @model_validator(mode="after")
+    def _cart_on_site(self) -> "StoreConfig":
+        # A cart link to another host would make the store an open redirect.
+        site = (self.site.host or "").lower()
+        bad = [name for name, url in _cart_urls(self.cart) if not _on_site(url, site)]
+        if bad:
+            raise ValueError(f"cart.{', cart.'.join(bad)}: host must be {site} or its subdomain")
         return self
 
 
@@ -136,12 +282,25 @@ def _substitute(value: Any, where: str) -> Any:
     return value
 
 
+def _secrets_from_env(raw: dict[str, Any], path: Path) -> None:
+    """A secret written into the file ends up in git and in backups: refuse it before the
+    substitution, while a literal still looks different from `${VAR}`."""
+    cart = raw.get("cart")
+    if not isinstance(cart, dict):
+        return
+    for key in _SECRET_KEYS:
+        value = cart.get(key)
+        if value is not None and not (isinstance(value, str) and _ENV_REF.fullmatch(value)):
+            raise ConfigError(f"{path}: cart.{key} must be a ${{ENV}} reference, not a literal")
+
+
 def load(path: str | Path) -> StoreConfig:
     path = Path(path)
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise ConfigError(f"{path}: {e}") from e
+    _secrets_from_env(raw, path)
     try:
         return StoreConfig.model_validate(_substitute(raw, path.name))
     except ValidationError as e:

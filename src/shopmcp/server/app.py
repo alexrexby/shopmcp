@@ -114,7 +114,9 @@ def build_app(
         )
         adapter = registry.create(cfg.adapter, ctx)
     shop = adapter  # narrowed for the closures below
-    cart = strategies.create(cfg.cart, shop, texts)
+    cart = strategies.create(
+        cfg.cart, shop, texts, site=cfg.site, public_url=cfg.server.public_url, store_id=cfg.id
+    )
     canonical = canonical_tools(cfg, shop, cart)
     check_text_keys(cfg, canonical)
     check_tool_scopes(cfg, canonical)

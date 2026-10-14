@@ -3,22 +3,20 @@
 from typing import Any
 
 import pytest
-from fakes import FakeAdapter, make_product
+from fakes import FakeAdapter, cart_strategy, make_product
 from test_tools_spec import cfg
 
 from shopmcp.capabilities import Capability
-from shopmcp.cart import strategies
 from shopmcp.config import StoreConfig
 from shopmcp.domain.models import Category, Facets, FacetValue, PickupPoint
 from shopmcp.errors import InvalidInput, NotFound, Unauthorized
-from shopmcp.i18n import Texts
 from shopmcp.tools.catalog import MAX_FACETS, top_facets
 from shopmcp.tools.spec import build_tools
 
 
 def tool(adapter: FakeAdapter, suffix: str, c: StoreConfig | None = None) -> Any:
     c = c or cfg()
-    cart = strategies.create(c.cart, adapter, Texts(c.locale))
+    cart = cart_strategy(c, adapter)
     return next(s.fn for s in build_tools(c, adapter, cart) if s.suffix == suffix)
 
 

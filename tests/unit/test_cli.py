@@ -2,7 +2,6 @@
 
 import inspect
 import json
-import socket
 import threading
 import time
 import urllib.request
@@ -15,6 +14,7 @@ from shopmcp import cli
 from shopmcp.adapters import registry
 from shopmcp.adapters.base import AdapterContext, ShopAdapter
 from shopmcp.config import AdapterConfig, load
+from shopmcp.conformance.runner import bound_socket
 
 STUB_KINDS = ["bitrix", "insales", "http_json"]
 FEED = "https://shop.example/feed.xml"
@@ -138,33 +138,23 @@ def test_index_starts_and_closes_the_adapter(workdir, capsys):
     assert json.loads(capsys.readouterr().out) == {"products": len(fake.products)}
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 @pytest.mark.parametrize("kind", STUB_KINDS)
 def test_stub_store_serves_only_store_info(workdir, kind):
     import uvicorn
 
     from shopmcp.server.app import build_app
 
+    sock = bound_socket()  # not a port number bound later: that races with other runs
     server = uvicorn.Server(
-        uvicorn.Config(
-            build_app(load(_config_with_kind(workdir, kind))),
-            host="127.0.0.1",
-            port=_free_port(),
-            log_level="warning",
-        )
+        uvicorn.Config(build_app(load(_config_with_kind(workdir, kind))), log_level="warning")
     )
-    thread = threading.Thread(target=server.run, daemon=True)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
     try:
-        base = f"http://127.0.0.1:{server.config.port}"
-        for _ in range(100):
-            if server.started:
-                break
+        base = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        deadline = time.monotonic() + 30
+        while not server.started:
+            assert thread.is_alive() and time.monotonic() < deadline, "server did not start"
             time.sleep(0.05)
         with urllib.request.urlopen(f"{base}/healthz", timeout=5) as r:
             assert r.status == 200
@@ -182,3 +172,4 @@ def test_stub_store_serves_only_store_info(workdir, kind):
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+        sock.close()

@@ -7,8 +7,10 @@ from typing import Any
 from mcp.server.auth.provider import AccessToken
 from pydantic import HttpUrl
 
-from shopmcp.adapters.base import AdapterBase, SearchQuery
+from shopmcp.adapters.base import AdapterBase, SearchQuery, ShopAdapter
 from shopmcp.capabilities import Capability
+from shopmcp.cart import strategies
+from shopmcp.config import StoreConfig
 from shopmcp.domain.models import (
     CartLine,
     Category,
@@ -21,6 +23,7 @@ from shopmcp.domain.models import (
     Product,
 )
 from shopmcp.errors import NotSupported
+from shopmcp.i18n import Texts
 
 
 def make_product(id: str, name: str, price: str = "100", **kw: Any) -> Product:
@@ -147,3 +150,10 @@ class FakeAdapter(AdapterBase):
     async def orders(self, token: AccessToken, page: int, limit: int) -> tuple[list[Order], int]:
         self._need(Capability.ORDERS)
         return self._orders[(page - 1) * limit : page * limit], len(self._orders)
+
+
+def cart_strategy(c: StoreConfig, adapter: ShopAdapter) -> strategies.CartStrategy:
+    """The store's cart strategy, as build_app creates it."""
+    return strategies.create(
+        c.cart, adapter, Texts(c.locale), site=c.site, public_url=c.server.public_url, store_id=c.id
+    )

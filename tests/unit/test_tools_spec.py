@@ -5,12 +5,10 @@ import re
 from pathlib import Path
 
 import pytest
-from fakes import FakeAdapter
+from fakes import FakeAdapter, cart_strategy
 
 from shopmcp.capabilities import Capability
-from shopmcp.cart import strategies
 from shopmcp.config import StoreConfig, load
-from shopmcp.i18n import Texts
 from shopmcp.tools.spec import build_tools, page_meta
 
 DEMO = Path(__file__).resolve().parents[2] / "stores/demo/store.toml"
@@ -41,7 +39,7 @@ def cfg(**changes: object) -> StoreConfig:
 
 
 def suffixes(c: StoreConfig, adapter: FakeAdapter) -> set[str]:
-    cart = strategies.create(c.cart, adapter, Texts(c.locale))
+    cart = cart_strategy(c, adapter)
     return {s.suffix for s in build_tools(c, adapter, cart)}
 
 
@@ -74,7 +72,7 @@ def test_disabled_tools_are_dropped():
 def test_every_tool_text_has_both_languages():
     c = cfg()
     adapter = FakeAdapter()
-    specs = build_tools(c, adapter, strategies.create(c.cart, adapter, Texts("ru")))
+    specs = build_tools(c, adapter, cart_strategy(c, adapter))
     keys = [key for spec in specs for key, _ in spec.texts()]
     assert len(keys) == len(set(keys))
     for spec in specs:
@@ -87,7 +85,7 @@ def test_every_documented_param_exists():
     # with_param_docs raises on unknown names at registration; this pins it earlier.
     c = cfg()
     adapter = FakeAdapter()
-    for spec in build_tools(c, adapter, strategies.create(c.cart, adapter, Texts("ru"))):
+    for spec in build_tools(c, adapter, cart_strategy(c, adapter)):
         params = set(inspect.signature(spec.fn).parameters)
         assert set(spec.params) == params, spec.suffix
 
@@ -95,7 +93,7 @@ def test_every_documented_param_exists():
 def test_orders_scope_comes_from_config():
     c = cfg(auth__tool_scopes={"orders_history": ["account.orders"]})
     adapter = FakeAdapter()
-    specs = build_tools(c, adapter, strategies.create(c.cart, adapter, Texts("ru")))
+    specs = build_tools(c, adapter, cart_strategy(c, adapter))
     scopes = {s.suffix: s.scopes for s in specs if s.scopes}
     assert scopes == {"orders_history": ("account.orders",)}
 

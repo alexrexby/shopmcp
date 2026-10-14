@@ -64,6 +64,7 @@ class Product(Model):
     params: list[Param] = []
     unit: str | None = None
     rating: Rating | None = None
+    group_id: str | None = None  # variants of one product share it (YML offer@group_id)
 
 
 class ProductSummary(Model):
@@ -143,13 +144,17 @@ class CartLinkItem(Model):
     name: str
     quantity: Number
     url: HttpUrl
+    add_url: HttpUrl | None = None  # puts this one line into the cart; `url` stays the page
 
 
 class CartHandoff(Model):
-    kind: Literal["share_link", "url_template", "link_list"]
+    kind: Literal[
+        "share_link", "url_template", "json_fragment", "form_post", "receiver", "link_list"
+    ]
     url: HttpUrl | None = None
     links: list[CartLinkItem] = []
     note: str | None = None
+    expires_at: datetime | None = None  # a signed link (form_post, receiver) stops working
 
 
 class OrderItem(Model):

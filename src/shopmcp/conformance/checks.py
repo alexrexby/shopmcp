@@ -71,7 +71,14 @@ class Expect:
         # create() only reads the config: nothing is fetched or indexed here.
         ctx = AdapterContext(data_dir=Path("."), http_timeout=TIMEOUT, store_id=cfg.id)
         adapter = registry.create(cfg.adapter, ctx)
-        cart = strategies.create(cfg.cart, adapter, Texts(cfg.locale, cfg.texts))
+        cart = strategies.create(
+            cfg.cart,
+            adapter,
+            Texts(cfg.locale, cfg.texts),
+            site=cfg.site,
+            public_url=cfg.server.public_url,
+            store_id=cfg.id,
+        )
         specs = build_tools(cfg, adapter, cart)
         return cls(
             brand=cfg.brand,

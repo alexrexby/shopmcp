@@ -45,7 +45,8 @@ def tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[To
         missing = [i for i in wanted if i not in products]
         if missing:
             raise InvalidInput(details={"missing": missing})
-        return ok(await cart.handoff(cart_lines, products))
+        refs = await adapter.cart_refs(wanted)
+        return ok(await cart.handoff(cart_lines, products, refs))
 
     return [
         ToolSpec(
@@ -60,12 +61,13 @@ def tools(cfg: StoreConfig, adapter: ShopAdapter, cart: CartStrategy) -> list[To
             description=L10n(
                 ru=f"Передаёт собранный список товаров на сайт магазина: от 1 до {max_lines} "
                 "позиций. Возвращает ссылку, которая наполняет корзину, либо ссылки на карточки "
-                "с количеством. Оформление и оплата — на сайте магазина. Несуществующие id "
-                "вернутся ошибкой с их перечнем.",
+                "с количеством; у позиции может быть add_url — ссылка, которая кладёт её в "
+                "корзину. Оформление и оплата — на сайте магазина. Несуществующие id вернутся "
+                "ошибкой с их перечнем.",
                 en=f"Hands the collected list over to the store website: 1 to {max_lines} lines. "
-                "Returns a link that fills the cart, or product page links with quantities. "
-                "Checkout and payment happen on the store website. Unknown ids return an error "
-                "that lists them.",
+                "Returns a link that fills the cart, or product page links with quantities; a "
+                "line may carry add_url, a link that puts it into the cart. Checkout and payment "
+                "happen on the store website. Unknown ids return an error that lists them.",
             ),
             params={
                 "lines": L10n(

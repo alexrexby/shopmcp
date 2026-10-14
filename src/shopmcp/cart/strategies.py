@@ -1,17 +1,28 @@
-"""Cart handoff: the agent builds a list, the store gets a link, the human pays on the site."""
+"""Cart handoff: the agent builds a list, the store gets a link, the human pays on the site.
+
+A strategy is named by who writes the cart: the store's own GET handler (`url_template`,
+`json_fragment`), our module on the store site (`receiver`), our trampoline page posting
+to the store (`form_post`), the store API (`share_link`), or the human (`link_list`).
+"""
 
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
+from importlib import import_module
 from typing import Literal, Protocol
 from urllib.parse import quote
 
+from pydantic import HttpUrl
+
 from shopmcp.adapters.base import ShopAdapter
 from shopmcp.capabilities import Capability
-from shopmcp.config import CartConfig, ConfigError
+from shopmcp.cart.refs import CartRef
+from shopmcp.config import CartConfig, ConfigError, UrlTemplateCart
 from shopmcp.domain.models import CartHandoff, CartLine, CartLinkItem, Product
 from shopmcp.i18n import Texts, define
 
-CartKind = Literal["share_link", "url_template", "link_list"]
+CartKind = Literal[
+    "share_link", "url_template", "json_fragment", "form_post", "receiver", "link_list"
+]
 
 MAX_URL_LENGTH = 2000  # longer cart URLs are cut by browsers and proxies
 
@@ -26,7 +37,10 @@ class CartStrategy(Protocol):
     kind: CartKind
 
     async def handoff(
-        self, lines: Sequence[CartLine], products: Mapping[str, Product]
+        self,
+        lines: Sequence[CartLine],
+        products: Mapping[str, Product],
+        refs: Mapping[str, CartRef],  # Product.id -> cart key, from adapter.cart_refs()
     ) -> CartHandoff: ...
 
 
@@ -52,7 +66,10 @@ class LinkListStrategy:
     kind: CartKind = "link_list"
 
     async def handoff(
-        self, lines: Sequence[CartLine], products: Mapping[str, Product]
+        self,
+        lines: Sequence[CartLine],
+        products: Mapping[str, Product],
+        refs: Mapping[str, CartRef],
     ) -> CartHandoff:
         return CartHandoff(kind=self.kind, links=_links(lines, products))
 
@@ -66,10 +83,10 @@ class UrlTemplateStrategy:
 
     kind: CartKind = "url_template"
 
-    def __init__(self, cfg: CartConfig, texts: Texts) -> None:
-        # Both are present with their placeholders: CartConfig validates url_template carts.
-        self._url = cfg.url_template or ""
-        self._item = cfg.item_template or ""
+    def __init__(self, cfg: UrlTemplateCart, texts: Texts) -> None:
+        # Both carry their placeholders: UrlTemplateCart validates them.
+        self._url = cfg.url_template
+        self._item = cfg.item_template
         self._sep = cfg.item_separator
         self._texts = texts
 
@@ -83,7 +100,10 @@ class UrlTemplateStrategy:
         return self._url.replace("{items}", items)
 
     async def handoff(
-        self, lines: Sequence[CartLine], products: Mapping[str, Product]
+        self,
+        lines: Sequence[CartLine],
+        products: Mapping[str, Product],
+        refs: Mapping[str, CartRef],
     ) -> CartHandoff:
         links = _links(lines, products)
         url = self.url(lines)
@@ -102,17 +122,46 @@ class ShareLinkStrategy:
         self._adapter = adapter
 
     async def handoff(
-        self, lines: Sequence[CartLine], products: Mapping[str, Product]
+        self,
+        lines: Sequence[CartLine],
+        products: Mapping[str, Product],
+        refs: Mapping[str, CartRef],
     ) -> CartHandoff:
         url = await self._adapter.create_share_link(lines)
         return CartHandoff(kind=self.kind, url=url, links=_links(lines, products))
 
 
-def create(cfg: CartConfig, adapter: ShopAdapter, texts: Texts) -> CartStrategy:
+def create(
+    cfg: CartConfig,
+    adapter: ShopAdapter,
+    texts: Texts,
+    *,
+    site: HttpUrl,
+    public_url: HttpUrl,
+    store_id: str,
+) -> CartStrategy:
+    """The configured strategy. `site` is the store website, `public_url` this server's
+    MCP endpoint (the trampoline lives on its origin), `store_id` goes into signed tokens."""
     if cfg.strategy == "share_link":
         if Capability.SHARE_LINK not in adapter.capabilities():
             raise ConfigError("cart.strategy share_link: the adapter has no share_link capability")
         return ShareLinkStrategy(adapter)
     if cfg.strategy == "url_template":
         return UrlTemplateStrategy(cfg, texts)
+    if cfg.strategy == "form_post":
+        # Imported only here: a store without the trampoline does not depend on it, and
+        # removing the module breaks only the stores that use it (as adapters/registry).
+        module = "shopmcp.cart.form_post"
+        try:
+            factory = import_module(module).create
+        except (ImportError, AttributeError) as e:
+            raise ConfigError(
+                f"cart.strategy form_post: {module}.create is unavailable: {e}"
+            ) from e
+        strategy: CartStrategy = factory(
+            cfg, texts, site=site, public_url=public_url, store_id=store_id
+        )
+        return strategy
+    if cfg.strategy in ("json_fragment", "receiver"):
+        raise ConfigError(f"cart.strategy {cfg.strategy}: not implemented in this version")
     return LinkListStrategy()

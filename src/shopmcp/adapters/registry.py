@@ -12,6 +12,8 @@ Factory = Callable[[AdapterConfig, AdapterContext], ShopAdapter]
 # Each module exposes `create(cfg: AdapterConfig, ctx: AdapterContext) -> ShopAdapter`.
 _MODULES: dict[str, str] = {
     "yml": "shopmcp.adapters.yml.adapter",
+    "feed": "shopmcp.adapters.yml.adapter",  # YML or Google Merchant: one parser pipeline
+    "woocommerce": "shopmcp.adapters.woocommerce",
     "bitrix": "shopmcp.adapters.bitrix",
     "insales": "shopmcp.adapters.insales",
     "http_json": "shopmcp.adapters.http_json",
