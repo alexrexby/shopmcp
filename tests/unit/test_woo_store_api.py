@@ -1,5 +1,7 @@
 """Store API reader over a recorded shop: mapping, prices, pages, failures."""
 
+import json
+import urllib.request
 from decimal import Decimal
 
 import pytest
@@ -11,14 +13,33 @@ from shopmcp.domain.models import Category, Product
 
 
 @pytest.fixture
-def shop(monkeypatch):
+def pauses(monkeypatch) -> list[float]:
+    """Every pause of a read, none of them slept."""
+    out: list[float] = []
+    monkeypatch.setattr(store_api, "sleep", out.append)
+    return out
+
+
+@pytest.fixture
+def shop(monkeypatch, pauses):
     monkeypatch.setattr(store_api, "REQUEST_INTERVAL", 0)
     return WooShop().install(monkeypatch)
 
 
-def read(max_pages: int = 50) -> tuple[list[Category], dict[str, Product], FeedStats]:
+def read(
+    max_pages: int = 50, max_seconds: float = 60, max_bytes: int = 2**30
+) -> tuple[list[Category], dict[str, Product], FeedStats]:
     stats = FeedStats()
-    items = list(store_api.read(SITE, stats, timeout=5, max_pages=max_pages, max_seconds=60))
+    items = list(
+        store_api.read(
+            SITE,
+            stats,
+            timeout=5,
+            max_pages=max_pages,
+            max_seconds=max_seconds,
+            max_bytes=max_bytes,
+        )
+    )
     categories = [i for i in items if isinstance(i, Category)]
     products = {i.id: i for i in items if isinstance(i, Product)}
     return categories, products, stats
@@ -146,7 +167,7 @@ def test_every_page_is_read(shop, monkeypatch):
     assert shop.pages("variations") == [1, 2]
 
 
-def test_pages_without_total_header_end_on_a_short_page(monkeypatch):
+def test_pages_without_total_header_end_on_a_short_page(monkeypatch, pauses):
     monkeypatch.setattr(store_api, "REQUEST_INTERVAL", 0)
     monkeypatch.setattr(store_api, "PER_PAGE", 2)
     shop = WooShop(total_pages_header=False).install(monkeypatch)
@@ -156,21 +177,41 @@ def test_pages_without_total_header_end_on_a_short_page(monkeypatch):
     assert shop.pages("categories") == [1, 2, 3]  # 2 + 2 + an empty page
 
 
-def test_empty_page_mid_listing_ends_it(shop, monkeypatch):
-    # The catalog shrank while it was read: page 2 of 4 is already past the end.
+def test_empty_page_mid_listing_fails_the_read(shop, monkeypatch):
+    # Review H1: page 2 of 4 empty is a cache or a plugin, not the end of the catalog;
+    # taken as the end, it replaced the index with 2 products of 8 and no variations.
     monkeypatch.setattr(store_api, "PER_PAGE", 2)
     shop.faults[("products", 2)] = lambda url: Response(b"[]")
+    with pytest.raises(FeedError, match="products page 2: 0 items, X-WP-TotalPages is 4"):
+        read()
+    assert shop.pages("variations") == []
+
+
+def test_listing_short_of_x_wp_total_fails_the_read(monkeypatch, pauses):
+    monkeypatch.setattr(store_api, "REQUEST_INTERVAL", 0)
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    shop = WooShop(total_pages_header=False).install(monkeypatch)
+    shop.faults[("products", 2)] = lambda url: Response(b"[]", headers={"X-WP-Total": "8"})
+    with pytest.raises(FeedError, match="products: 2 items read, X-WP-Total is 8"):
+        read()
+
+
+def test_a_product_deleted_while_reading_is_not_a_failure(shop, monkeypatch):
+    # Deleted from a page already read: the next ones shift, the last but one comes short.
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    page3 = json.dumps(shop.listings["products"][4:5]).encode()
+    shop.faults[("products", 3)] = lambda url: Response(page3)
     _, products, _ = read()
-    assert shop.pages("products") == [1, 2]
-    assert sorted(products) == ["101", "102"]
-    assert shop.pages("variations") == []  # their product was on the lost pages
+    assert shop.pages("products") == [1, 2, 3]
+    assert {"101", "102", "201", "202"} <= set(products)
 
 
-def test_empty_catalog(shop):
+def test_empty_catalog_fails_the_read(shop):
+    # Not an empty shop served over the previous index (review H1).
     shop.listings["products"] = []
-    _, products, stats = read()
-    assert products == {} and stats.offers == 0
-    assert shop.pages("variations") == []  # no variable product, nothing to ask
+    with pytest.raises(FeedError, match="/products: the catalog is empty"):
+        read()
+    assert shop.pages("variations") == []
 
 
 def test_too_many_pages_fails_before_reading_them(shop, monkeypatch):
@@ -180,7 +221,7 @@ def test_too_many_pages_fails_before_reading_them(shop, monkeypatch):
     assert shop.pages("products") == [1]
 
 
-def test_too_many_pages_without_total_header(monkeypatch):
+def test_too_many_pages_without_total_header(monkeypatch, pauses):
     monkeypatch.setattr(store_api, "REQUEST_INTERVAL", 0)
     monkeypatch.setattr(store_api, "PER_PAGE", 2)
     WooShop(total_pages_header=False).install(monkeypatch)
@@ -210,23 +251,136 @@ def test_a_failed_page_fails_the_whole_read(shop, monkeypatch, fault, message):
     assert "/wp-json/wc/store/v1/products" in str(e.value) and "?" not in str(e.value)
 
 
+@pytest.mark.parametrize("fault", ["503", "429", "timeout", "reset", "cut"])
+def test_a_transient_failure_is_tried_again(shop, monkeypatch, pauses, fault):
+    # Review M1: one 503 among hundreds of pages failed the whole read.
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    shop.flaky[("products", 2)] = [FAULTS[fault]]
+    _, products, _ = read()
+    assert len(products) == 5
+    assert shop.pages("products") == [1, 2, 2, 3, 4]
+    # Retry-After is honoured; otherwise the first backoff.
+    assert [p for p in pauses if p] == [7.0 if fault == "429" else store_api.RETRY_PAUSE]
+
+
+def test_transient_failures_are_tried_a_bounded_number_of_times(shop, monkeypatch, pauses):
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    shop.faults[("products", 2)] = FAULTS["503"]
+    with pytest.raises(FeedError, match="products page 2: HTTP 503"):
+        read()
+    assert shop.pages("products") == [1, 2, 2, 2]
+    assert [p for p in pauses if p] == [store_api.RETRY_PAUSE, 2 * store_api.RETRY_PAUSE]
+
+
+@pytest.mark.parametrize("fault", ["500", "404", "html", "not_json"])
+def test_other_failures_are_not_tried_again(shop, monkeypatch, fault):
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    shop.faults[("products", 2)] = FAULTS[fault]
+    with pytest.raises(FeedError):
+        read()
+    assert shop.pages("products") == [1, 2]
+
+
+def test_a_long_retry_after_is_not_waited_for(shop, monkeypatch, pauses):
+    from woo_shop import status
+
+    shop.faults[("products", 1)] = status(429, retry_after="3600")
+    with pytest.raises(FeedError, match="HTTP 429"):
+        read()
+    assert shop.pages("products") == [1] and not any(pauses)
+
+
 def test_page_size_is_capped(shop, monkeypatch):
     monkeypatch.setattr(store_api, "MAX_PAGE_BYTES", 1000)
     with pytest.raises(FeedError, match="exceeds 1000 bytes"):
         read()
 
 
-def test_whole_read_is_bounded_in_time(shop, monkeypatch):
-    clock = iter([0.0, 0.0, 100.0, 100.0, 100.0])
-    monkeypatch.setattr(store_api.time, "monotonic", lambda: next(clock, 100.0))
-    with pytest.raises(FeedError, match="exceeded 60 s"):
+def test_default_page_cap_is_a_few_megabytes(shop):
+    # Review V1: 16 MB of `[[],[],...]` held 416 MB after json.loads.
+    huge = [{"id": i, "name": "x" * 1000, "parent": 0} for i in range(1, 5001)]
+    shop.faults[("categories", 1)] = lambda url: Response(json.dumps(huge).encode())
+    with pytest.raises(FeedError, match="exceeds 4194304 bytes"):
         read()
 
 
-def test_only_paced_keyless_gets(shop, monkeypatch):
-    pauses: list[float] = []
+def test_whole_read_is_capped_in_bytes(shop, monkeypatch):
+    # Review V1: a shop can send max_pages pages of bloated items; the cap is per read.
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    shop.listings["categories"] = [
+        {"id": i, "name": "x" * 100_000, "parent": 0} for i in range(1, 41)
+    ]
+    with pytest.raises(FeedError, match="exceeds 1 MB, raise adapter.max_feed_mb"):
+        read(max_bytes=2**20)
+    assert len(shop.pages("categories")) <= 6  # 200 KB a page: stopped at the cap
+
+
+def test_what_is_kept_between_pages_is_capped(shop):
+    # Review V1: a variable product's summary is kept until its variations are read.
+    long = "y" * 1000
+    product = {
+        "id": 1,
+        "name": long,
+        "attributes": [
+            {
+                "name": f"{a}{long}",
+                "has_variations": a == 0,
+                "terms": [{"slug": f"{t}{long}", "name": f"{t}{long}"} for t in range(300)],
+            }
+            for a in range(40)
+        ],
+        "variations": [
+            {"id": v, "attributes": [{"name": f"a{x}", "value": long} for x in range(40)]}
+            for v in range(1, 1201)
+        ],
+    }
+    parent = store_api._parent(product)
+    assert parent is not None and len(parent.name) == store_api.MAX_NAME
+    assert len(parent.terms) == store_api.MAX_ATTRIBUTES
+    assert all(len(t) <= store_api.MAX_TERMS for t in parent.terms.values())
+    assert all(len(k) <= store_api.MAX_NAME for t in parent.terms.values() for k in t)
+    assert len(parent.axes) == store_api.MAX_VARIATIONS
+    axes = parent.axes[1]
+    assert len(axes) == store_api.MAX_ATTRIBUTES
+    assert all(len(v) == store_api.MAX_NAME for _, v in axes)
+    assert all(len(p.value) <= store_api.MAX_PARAM for p in parent.params)
+    shop.listings["categories"] = [{"id": 1, "name": long, "parent": 0}]
+    categories, _, _ = read()
+    assert len(categories[0].name) == store_api.MAX_NAME
+
+
+def test_whole_read_is_bounded_in_time(shop, monkeypatch):
+    clock = Clock(monkeypatch, shop, step=100.0)
+    with pytest.raises(FeedError, match="exceeded 60 s"):
+        read()
+    assert clock.now == 100.0  # the first answer
+
+
+def test_a_listing_that_cannot_fit_the_budget_fails_before_it_is_read(shop, monkeypatch):
+    # Review M2: at 25 s an answer the 4 product pages need 75 s, 45 s are left of 120.
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    Clock(monkeypatch, shop, step=25.0)
+    with pytest.raises(FeedError, match="too large for the read budget, raise adapter.max_minutes"):
+        read(max_seconds=120)
+    assert shop.pages("products") == [1]
+
+
+class Clock:
+    """`time.monotonic` that moves `step` seconds with each answer of the shop."""
+
+    def __init__(self, monkeypatch, shop: WooShop, step: float) -> None:
+        self.now = 0.0
+        monkeypatch.setattr(store_api.time, "monotonic", lambda: self.now)
+
+        def urlopen(req, *args, **kwargs):
+            self.now += step
+            return shop.urlopen(req, *args, **kwargs)
+
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+
+def test_only_paced_keyless_gets(shop, monkeypatch, pauses):
     monkeypatch.setattr(store_api, "REQUEST_INTERVAL", 0.5)
-    monkeypatch.setattr(store_api.time, "sleep", pauses.append)
     read()
     assert {r.get_method() for r in shop.requests} == {"GET"}
     assert all(
@@ -235,3 +389,14 @@ def test_only_paced_keyless_gets(shop, monkeypatch):
     )
     assert pauses == [0.5] * (len(shop.requests) - 1)
     assert len(shop.requests) == 3  # categories, products, variations
+
+
+def test_variation_with_an_attribute_left_at_any_is_skipped(shop):
+    # Review M3: `?add-to-cart=<id>` alone likely does not add a variation whose colour is
+    # "Any Цвет" (not checked live: stage D). The live API sends `value: null`.
+    [tee] = [p for p in shop.listings["products"] if p["id"] == 103]
+    tee["variations"].append({"id": 203, "attributes": [{"name": "Цвет", "value": None}]})
+    shop.listings["variations"].append({**shop.listings["variations"][0], "id": 203})
+    _, products, stats = read()
+    assert "203" not in products and {"201", "202"} <= set(products)
+    assert (stats.offers, stats.skipped) == (11, 6)

@@ -4,16 +4,18 @@ from pathlib import Path
 
 import anyio
 import pytest
-from woo_shop import FAULTS, SITE, WooShop
+from woo_shop import FAULTS, SITE, Response, WooShop
 
 from shopmcp import cli
 from shopmcp.adapters import registry
 from shopmcp.adapters.base import AdapterContext, SearchQuery
 from shopmcp.adapters.woocommerce import WooAdapter, create, store_api
 from shopmcp.adapters.woocommerce.adapter import CAPABILITIES
+from shopmcp.adapters.yml.adapter import FEED_SECONDS
 from shopmcp.capabilities import Capability
 from shopmcp.cart.refs import CartRef
 from shopmcp.config import AdapterConfig, ConfigError, load
+from shopmcp.conformance import runner
 from shopmcp.conformance.runner import check_config
 from shopmcp.errors import Unavailable
 
@@ -46,6 +48,7 @@ sample_query = "футболка"
 @pytest.fixture
 def shop(monkeypatch):
     monkeypatch.setattr(store_api, "REQUEST_INTERVAL", 0)
+    monkeypatch.setattr(store_api, "sleep", lambda seconds: None)
     return WooShop().install(monkeypatch)
 
 
@@ -123,6 +126,42 @@ async def test_failed_refresh_keeps_the_previous_snapshot(shop, tmp_path):
         await a.close()
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("cut", "error"),
+    [
+        ("page 2", "products page 2: 0 items, X-WP-TotalPages is 4"),
+        ("all", "the catalog is empty"),
+    ],
+)
+async def test_a_cut_listing_keeps_the_previous_snapshot(shop, tmp_path, monkeypatch, cut, error):
+    # Review H1: a short 200 page replaced the whole index, health green.
+    monkeypatch.setattr(store_api, "PER_PAGE", 2)
+    a = WooAdapter(SITE, ctx(tmp_path), refresh_minutes=60)
+    a._interval = 0.01
+    await a.start()
+    try:
+        if cut == "all":
+            shop.listings["products"] = []
+        else:
+            shop.faults[("products", 2)] = lambda url: Response(b"[]")
+        for _ in range(200):
+            if a._failures:
+                break
+            await anyio.sleep(0.01)
+        health = await a.health()
+        assert health["failed_refreshes"] >= 1 and error in health["last_error"]
+        assert health["products"] == 5
+        assert {p.id for p in await a.get_products(["101", "107", "201"])} == {"101", "107", "201"}
+    finally:
+        await a.close()
+
+
+def test_online_check_waits_for_a_whole_catalog_read():
+    # Review L4: 600 s against a read budget of 1800 s.
+    assert runner.ONLINE_START_TIMEOUT > FEED_SECONDS
+
+
 # --- config -------------------------------------------------------------------
 
 
@@ -131,9 +170,19 @@ def make(tmp_path: Path, **extra) -> WooAdapter:
 
 
 def test_config(tmp_path):
-    a = make(tmp_path, site="https://shop.example/shop/", refresh_minutes=30, max_pages=5)
+    a = make(
+        tmp_path,
+        site="https://shop.example/shop/",
+        refresh_minutes=30,
+        max_pages=5,
+        max_minutes=90,
+        max_feed_mb=10,
+    )
     assert a.site == "https://shop.example/shop" and a.max_pages == 5
     assert a.refresh_minutes == 30
+    assert a.max_seconds == 90 * 60 and a.max_bytes == 10 * 2**20
+    default = make(tmp_path, site=SITE)
+    assert default.max_seconds == FEED_SECONDS and default.max_bytes == 200 * 2**20
 
 
 @pytest.mark.parametrize(
@@ -146,6 +195,9 @@ def test_config(tmp_path):
         ({"site": "shop.example"}, "adapter.site"),
         ({"site": SITE, "feed": "x.xml"}, "unknown keys"),
         ({"site": SITE, "max_pages": 0}, "max_pages"),
+        ({"site": SITE, "max_minutes": 0}, "max_minutes"),
+        ({"site": SITE, "max_minutes": True}, "max_minutes"),
+        ({"site": SITE, "max_feed_mb": 0}, "max_feed_mb"),
         ({"site": SITE, "refresh_minutes": -1}, "refresh_minutes"),
         ({"site": SITE, "refresh_minutes": 60, "stale_minutes": 60}, "stale_minutes"),
     ],

@@ -35,8 +35,12 @@ CAPABILITIES = frozenset(
         Capability.PROMOTIONS,
     }
 )
-_KEYS = {"site", "refresh_minutes", "stale_minutes", "max_pages"}
-MAX_PAGES = 200  # per listing: 20 000 products and as many variations
+_KEYS = {"site", "refresh_minutes", "stale_minutes", "max_pages", "max_minutes", "max_feed_mb"}
+# Per listing. At the pace seen live (1 s apart, 6-9 s an answer) the default read budget
+# of max_minutes (FEED_SECONDS) holds about 200 pages for all listings together: a bigger
+# shop is refused on the first page of the listing that does not fit, with the key to raise.
+MAX_PAGES = 200
+MAX_MINUTES = FEED_SECONDS // 60
 
 
 class WooAdapter(YmlAdapter):
@@ -48,15 +52,19 @@ class WooAdapter(YmlAdapter):
         refresh_minutes: int = 60,
         stale_minutes: int | None = None,
         max_pages: int = MAX_PAGES,
+        max_minutes: int = MAX_MINUTES,
+        max_feed_mb: int = 200,
     ) -> None:
         super().__init__(
             site + store_api.API_PATH,  # the label in logs and health
             ctx,
             refresh_minutes=refresh_minutes,
+            max_feed_mb=max_feed_mb,  # the bytes of the whole read, every page
             stale_minutes=stale_minutes,
         )
         self.site = site
         self.max_pages = max_pages
+        self.max_seconds = max_minutes * 60
 
     def capabilities(self) -> frozenset[Capability]:
         return CAPABILITIES
@@ -72,7 +80,8 @@ class WooAdapter(YmlAdapter):
             stats,
             timeout=self.ctx.http_timeout,
             max_pages=self.max_pages,
-            max_seconds=FEED_SECONDS,
+            max_seconds=self.max_seconds,
+            max_bytes=self.max_bytes,
         )
         built = index.build(path, items, feed_meta=feed_meta, cart_ref=self.cart_ref)
         self._last_error = None
@@ -108,6 +117,8 @@ def create(cfg: AdapterConfig, ctx: AdapterContext) -> WooAdapter:
     refresh = extra.get("refresh_minutes", 60)
     stale = extra.get("stale_minutes")
     max_pages = extra.get("max_pages", MAX_PAGES)
+    max_minutes = extra.get("max_minutes", MAX_MINUTES)
+    max_mb = extra.get("max_feed_mb", 200)
     if not isinstance(refresh, int) or isinstance(refresh, bool) or refresh < 0:
         raise ConfigError("adapter.refresh_minutes must be an integer >= 0 (0 = no refresh)")
     if stale is not None and (
@@ -116,10 +127,16 @@ def create(cfg: AdapterConfig, ctx: AdapterContext) -> WooAdapter:
         raise ConfigError("adapter.stale_minutes must be an integer above refresh_minutes")
     if not isinstance(max_pages, int) or isinstance(max_pages, bool) or max_pages < 1:
         raise ConfigError("adapter.max_pages must be a positive integer")
+    if not isinstance(max_minutes, int) or isinstance(max_minutes, bool) or max_minutes < 1:
+        raise ConfigError("adapter.max_minutes must be a positive integer")
+    if not isinstance(max_mb, int) or isinstance(max_mb, bool) or max_mb < 1:
+        raise ConfigError("adapter.max_feed_mb must be a positive integer")
     return WooAdapter(
         site.rstrip("/"),  # type: ignore[union-attr]
         ctx,
         refresh_minutes=refresh,
         stale_minutes=stale,
         max_pages=max_pages,
+        max_minutes=max_minutes,
+        max_feed_mb=max_mb,
     )

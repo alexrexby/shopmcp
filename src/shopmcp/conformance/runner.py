@@ -15,7 +15,9 @@ from shopmcp.config import StoreConfig
 from shopmcp.conformance.checks import CheckResult, Expect, run
 
 START_TIMEOUT = 60.0  # seconds: a local start indexes the feed first
-ONLINE_START_TIMEOUT = 600.0  # a live catalog API is crawled politely, page by page
+# A live catalog API is crawled politely, page by page: a whole read (FEED_SECONDS of the
+# feed adapters, 30 min) and the start around it.
+ONLINE_START_TIMEOUT = 31 * 60.0
 
 
 def bound_socket() -> socket.socket:
@@ -43,7 +45,10 @@ def serve(app: ASGIApp, start_timeout: float = START_TIMEOUT) -> Iterator[str]:
         deadline = time.monotonic() + start_timeout
         while not server.started:
             if not thread.is_alive() or time.monotonic() > deadline:
-                raise RuntimeError("the local server did not start (see the log above)")
+                raise RuntimeError(
+                    f"the local server did not start in {start_timeout:g} s (see the log"
+                    " above; a big catalog takes longer: --start-timeout)"
+                )
             time.sleep(0.05)
         yield f"http://127.0.0.1:{port}"
     finally:

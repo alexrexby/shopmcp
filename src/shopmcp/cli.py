@@ -104,9 +104,9 @@ def _check(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        timeout = args.start_timeout or (
-            runner.ONLINE_START_TIMEOUT if args.online else runner.START_TIMEOUT
-        )
+        timeout = args.start_timeout
+        if timeout is None:
+            timeout = runner.ONLINE_START_TIMEOUT if args.online else runner.START_TIMEOUT
         results = runner.check_config(cfg, Path(args.config).resolve().parent, timeout)
     print(runner.report(results))
     return 1 if any(r.status == "fail" for r in results) else 0
@@ -422,6 +422,13 @@ def _scaffold(args: argparse.Namespace) -> int:
     return 0
 
 
+def _seconds(value: str) -> float:
+    seconds = float(value)  # ValueError: argparse says "invalid _seconds value"
+    if not seconds > 0:  # NaN too
+        raise argparse.ArgumentTypeError(f"must be a number of seconds above 0, got {value}")
+    return seconds
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="shopmcp", description="MCP server for an online store")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -446,9 +453,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--start-timeout",
-        type=float,
+        type=_seconds,
         metavar="SECONDS",
-        help="how long a local run waits for the first index (default 60, with --online 600)",
+        help="how long a local run waits for the first index (default 60, with --online 1860)",
     )
     p.set_defaults(func=_check)
 

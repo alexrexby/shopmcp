@@ -3,7 +3,8 @@
 The JSON files are whole listings in the shape of live responses (trimmed, fictional);
 `WooShop` pages them as WordPress does: `per_page`/`page`, `X-WP-Total`,
 `X-WP-TotalPages`, 200 `[]` past the end. `faults[(listing, page)]` replaces one answer
-with a failure. Any other host goes to the real `urlopen` (conformance talks to a local
+with a failure; `flaky[(listing, page)]` lists failures answered first, one per request,
+before the page itself. Any other host goes to the real `urlopen` (conformance talks to a local
 server through it).
 """
 
@@ -59,17 +60,39 @@ class Response:
         pass
 
 
-def http_error(url: str, code: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(url, code, "error", Message(), io.BytesIO(b"{}"))
+def http_error(
+    url: str, code: int, headers: dict[str, str] | None = None
+) -> urllib.error.HTTPError:
+    hdrs = Message()
+    for k, v in (headers or {}).items():
+        hdrs[k] = v
+    return urllib.error.HTTPError(url, code, "error", hdrs, io.BytesIO(b"{}"))
 
 
-def _server_error(url: str) -> Response:
-    raise http_error(url, 500)
+def status(code: int, **headers: str) -> Callable[[str], Response]:
+    """A fault answering HTTP `code`; `retry_after="7"` -> `Retry-After: 7`."""
+
+    def fault(url: str) -> Response:
+        raise http_error(url, code, {k.replace("_", "-").title(): v for k, v in headers.items()})
+
+    return fault
+
+
+def _raise(error: Exception) -> Callable[[str], Response]:
+    def fault(url: str) -> Response:
+        raise error
+
+    return fault
 
 
 # Ready-made faults: each takes the request URL, returns a Response or raises.
 FAULTS: dict[str, Callable[[str], Response]] = {
-    "500": _server_error,
+    "500": status(500),
+    "404": status(404),
+    "503": status(503),
+    "429": status(429, retry_after="7"),
+    "timeout": _raise(TimeoutError("timed out")),
+    "reset": _raise(ConnectionResetError(54, "Connection reset by peer")),
     "html": lambda url: Response(
         b"<html><body>Checking your browser</body></html>", ctype="text/html"
     ),
@@ -88,6 +111,7 @@ class WooShop:
         }
         self.total_pages_header = total_pages_header
         self.faults: dict[tuple[str, int], Callable[[str], Response]] = {}
+        self.flaky: dict[tuple[str, int], list[Callable[[str], Response]]] = {}
         self.requests: list[urllib.request.Request] = []
         self.real = urllib.request.urlopen
 
@@ -112,6 +136,8 @@ class WooShop:
         name, page, per_page = self._route(url)
         if (name, page) in self.faults:
             return self.faults[(name, page)](url)
+        if self.flaky.get((name, page)):
+            return self.flaky[(name, page)].pop(0)(url)
         if name is None:
             raise http_error(url, 404)
         items = self.listings[name]
