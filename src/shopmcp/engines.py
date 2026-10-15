@@ -90,7 +90,7 @@ PRESETS: Mapping[Engine, Preset] = {
             "strategy": "link_list",
             "line_template": "https://{base}/cart/?add-to-cart={id}&quantity={qty}",
         },
-        adapter={"kind": "woocommerce"},
+        adapter={"kind": "woocommerce", "site": "https://{base}"},
         notes=L10n(
             ru="Каталог — Store API без ключей. Ссылки-действия работают на любой версии "
             "WooCommerce; на версии 10+ одна ссылка ведёт сразу в оформление (см. alt_cart).",

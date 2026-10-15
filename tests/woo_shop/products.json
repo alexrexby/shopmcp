@@ -1,0 +1,587 @@
+[
+ {
+  "id": 101,
+  "name": "Бутылка для воды &#8211; 1 л",
+  "slug": "butylka-1l",
+  "parent": 0,
+  "type": "simple",
+  "variation": "",
+  "permalink": "https://shop.example/product/butylka-1l/",
+  "sku": "SKU-101",
+  "short_description": "",
+  "description": "<p>Прочная <strong>бутылка</strong> для&nbsp;воды.</p>\n<script>alert(1)</script>",
+  "on_sale": true,
+  "prices": {
+   "price": "129900",
+   "regular_price": "149900",
+   "sale_price": "129900",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [
+   {
+    "id": 1,
+    "src": "https://shop.example/wp-content/uploads/butylka.jpg",
+    "thumbnail": "https://shop.example/wp-content/uploads/t-butylka.jpg",
+    "srcset": "",
+    "sizes": "",
+    "name": "butylka.jpg",
+    "alt": ""
+   }
+  ],
+  "categories": [
+   {
+    "id": 10,
+    "name": "Посуда",
+    "slug": "posuda",
+    "link": "https://shop.example/product-category/posuda/"
+   },
+   {
+    "id": 11,
+    "name": "Бутылки",
+    "slug": "butylki",
+    "link": "https://shop.example/product-category/butylki/"
+   }
+  ],
+  "tags": [],
+  "brands": [
+   {
+    "id": 5,
+    "name": "Аква &amp; Ко",
+    "slug": "akva"
+   }
+  ],
+  "attributes": [
+   {
+    "id": 1,
+    "name": "Объём",
+    "taxonomy": "pa_obem",
+    "has_variations": false,
+    "terms": [
+     {
+      "id": 31,
+      "name": "1 л",
+      "slug": "1l"
+     }
+    ]
+   }
+  ],
+  "variations": [],
+  "grouped_products": [],
+  "has_options": false,
+  "is_purchasable": true,
+  "is_in_stock": true,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "in-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=101",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ },
+ {
+  "id": 102,
+  "name": "Термокружка",
+  "slug": "termokruzhka",
+  "parent": 0,
+  "type": "simple",
+  "variation": "",
+  "permalink": "https://shop.example/product/termokruzhka/",
+  "sku": "SKU-102",
+  "short_description": "<p>Держит тепло 6 часов</p>",
+  "description": "",
+  "on_sale": false,
+  "prices": {
+   "price": "99000",
+   "regular_price": "99000",
+   "sale_price": "99000",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [],
+  "categories": [
+   {
+    "id": 12,
+    "name": "Аксессуары",
+    "slug": "aksessuary",
+    "link": "https://shop.example/product-category/aksessuary/"
+   }
+  ],
+  "tags": [],
+  "brands": [],
+  "attributes": [],
+  "variations": [],
+  "grouped_products": [],
+  "has_options": false,
+  "is_purchasable": true,
+  "is_in_stock": false,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "out-of-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=102",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ },
+ {
+  "id": 103,
+  "name": "Футболка",
+  "slug": "futbolka",
+  "parent": 0,
+  "type": "variable",
+  "variation": "",
+  "permalink": "https://shop.example/product/futbolka/",
+  "sku": "SKU-103",
+  "short_description": "",
+  "description": "<p>Футболка из хлопка.</p>",
+  "on_sale": false,
+  "prices": {
+   "price": "79900",
+   "regular_price": "79900",
+   "sale_price": "79900",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [
+   {
+    "id": 1,
+    "src": "https://shop.example/wp-content/uploads/futbolka.jpg",
+    "thumbnail": "https://shop.example/wp-content/uploads/t-futbolka.jpg",
+    "srcset": "",
+    "sizes": "",
+    "name": "futbolka.jpg",
+    "alt": ""
+   }
+  ],
+  "categories": [
+   {
+    "id": 12,
+    "name": "Аксессуары",
+    "slug": "aksessuary",
+    "link": "https://shop.example/product-category/aksessuary/"
+   }
+  ],
+  "tags": [],
+  "brands": [],
+  "attributes": [
+   {
+    "id": 2,
+    "name": "Цвет",
+    "taxonomy": "pa_cvet",
+    "has_variations": true,
+    "terms": [
+     {
+      "id": 41,
+      "name": "Красный",
+      "slug": "krasnyj"
+     },
+     {
+      "id": 42,
+      "name": "Синий",
+      "slug": "sinij"
+     }
+    ]
+   },
+   {
+    "id": 0,
+    "name": "Материал",
+    "taxonomy": null,
+    "has_variations": false,
+    "terms": [
+     {
+      "id": 0,
+      "name": "Хлопок",
+      "slug": "Хлопок"
+     }
+    ]
+   }
+  ],
+  "variations": [
+   {
+    "id": 201,
+    "attributes": [
+     {
+      "name": "Цвет",
+      "value": "krasnyj"
+     }
+    ]
+   },
+   {
+    "id": 202,
+    "attributes": [
+     {
+      "name": "Цвет",
+      "value": "sinij"
+     }
+    ]
+   }
+  ],
+  "grouped_products": [],
+  "has_options": true,
+  "is_purchasable": true,
+  "is_in_stock": true,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "in-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=103",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ },
+ {
+  "id": 104,
+  "name": "Набор посуды",
+  "slug": "nabor",
+  "parent": 0,
+  "type": "grouped",
+  "variation": "",
+  "permalink": "https://shop.example/product/nabor/",
+  "sku": "SKU-104",
+  "short_description": "",
+  "description": "",
+  "on_sale": false,
+  "prices": {
+   "price": "",
+   "regular_price": "",
+   "sale_price": "",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [],
+  "categories": [
+   {
+    "id": 10,
+    "name": "Посуда",
+    "slug": "posuda",
+    "link": "https://shop.example/product-category/posuda/"
+   }
+  ],
+  "tags": [],
+  "brands": [],
+  "attributes": [],
+  "variations": [],
+  "grouped_products": [],
+  "has_options": false,
+  "is_purchasable": false,
+  "is_in_stock": true,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "in-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=104",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ },
+ {
+  "id": 105,
+  "name": "Чайник у партнёра",
+  "slug": "chajnik",
+  "parent": 0,
+  "type": "external",
+  "variation": "",
+  "permalink": "https://shop.example/product/chajnik/",
+  "sku": "SKU-105",
+  "short_description": "",
+  "description": "",
+  "on_sale": false,
+  "prices": {
+   "price": "250000",
+   "regular_price": "250000",
+   "sale_price": "250000",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [],
+  "categories": [
+   {
+    "id": 10,
+    "name": "Посуда",
+    "slug": "posuda",
+    "link": "https://shop.example/product-category/posuda/"
+   }
+  ],
+  "tags": [],
+  "brands": [],
+  "attributes": [],
+  "variations": [],
+  "grouped_products": [],
+  "has_options": false,
+  "is_purchasable": true,
+  "is_in_stock": true,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "in-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=105",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ },
+ {
+  "id": 106,
+  "name": "Кружка без цены",
+  "slug": "kruzhka",
+  "parent": 0,
+  "type": "simple",
+  "variation": "",
+  "permalink": "https://shop.example/product/kruzhka/",
+  "sku": "SKU-106",
+  "short_description": "",
+  "description": "",
+  "on_sale": false,
+  "prices": {
+   "price": "",
+   "regular_price": "",
+   "sale_price": "",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [],
+  "categories": [
+   {
+    "id": 10,
+    "name": "Посуда",
+    "slug": "posuda",
+    "link": "https://shop.example/product-category/posuda/"
+   }
+  ],
+  "tags": [],
+  "brands": [],
+  "attributes": [],
+  "variations": [],
+  "grouped_products": [],
+  "has_options": false,
+  "is_purchasable": false,
+  "is_in_stock": true,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "in-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=106",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ },
+ {
+  "id": 107,
+  "name": "Чай улун",
+  "slug": "chaj-ulun",
+  "parent": 0,
+  "type": "simple",
+  "variation": "",
+  "permalink": "https://shop.example/product/chaj-ulun/",
+  "sku": "SKU-107",
+  "short_description": "",
+  "description": "<p>Улун из провинции Фуцзянь, 100 г.</p>",
+  "on_sale": false,
+  "prices": {
+   "price": "45050",
+   "regular_price": "45050",
+   "sale_price": "45050",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [],
+  "categories": [
+   {
+    "id": 13,
+    "name": "Чай &amp; кофе",
+    "slug": "chaj-kofe",
+    "link": "https://shop.example/product-category/chaj-kofe/"
+   }
+  ],
+  "tags": [],
+  "brands": [],
+  "attributes": [],
+  "variations": [],
+  "grouped_products": [],
+  "has_options": false,
+  "is_purchasable": true,
+  "is_in_stock": true,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "in-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=107",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ },
+ {
+  "id": 108,
+  "name": "Свитер (снят с продажи)",
+  "slug": "sviter",
+  "parent": 0,
+  "type": "variable",
+  "variation": "",
+  "permalink": "https://shop.example/product/termokruzhka/",
+  "sku": "SKU-102",
+  "short_description": "<p>Держит тепло 6 часов</p>",
+  "description": "",
+  "on_sale": false,
+  "prices": {
+   "price": "0",
+   "regular_price": "0",
+   "sale_price": "0",
+   "price_range": null,
+   "currency_code": "RUB",
+   "currency_symbol": "₽",
+   "currency_minor_unit": 2,
+   "currency_decimal_separator": ",",
+   "currency_thousand_separator": " ",
+   "currency_prefix": "",
+   "currency_suffix": " ₽"
+  },
+  "price_html": "",
+  "average_rating": "0",
+  "review_count": 0,
+  "images": [],
+  "categories": [
+   {
+    "id": 12,
+    "name": "Аксессуары",
+    "slug": "aksessuary",
+    "link": "https://shop.example/product-category/aksessuary/"
+   }
+  ],
+  "tags": [],
+  "brands": [],
+  "attributes": [],
+  "variations": [],
+  "grouped_products": [],
+  "has_options": false,
+  "is_purchasable": false,
+  "is_in_stock": false,
+  "is_on_backorder": false,
+  "low_stock_remaining": null,
+  "stock_availability": {
+   "text": "",
+   "class": "out-of-stock"
+  },
+  "sold_individually": false,
+  "add_to_cart": {
+   "text": "В корзину",
+   "url": "?add-to-cart=102",
+   "minimum": 1,
+   "maximum": 99,
+   "multiple_of": 1
+  },
+  "extensions": {}
+ }
+]

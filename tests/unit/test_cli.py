@@ -324,3 +324,19 @@ def test_shopify_scaffold_writes_the_variant_rule_for_the_owner_to_check(workdir
     out = capsys.readouterr().out
     assert "adapter.cart_ref" in out and "g:id" in out
     assert "\n[adapter.cart_ref]\npattern = " in path.read_text("utf-8")
+
+
+@pytest.mark.parametrize(
+    "extra, expected",
+    [([], 60.0), (["--online"], 600.0), (["--online", "--start-timeout", "900"], 900.0)],
+)
+def test_check_waits_longer_for_an_online_index(monkeypatch, extra, expected):
+    """A live catalog API is crawled page by page: 60 s is not enough for the first index."""
+    from shopmcp.conformance import runner
+
+    seen = []
+    monkeypatch.setattr(runner, "check_config", lambda cfg, d, timeout: seen.append(timeout) or [])
+    monkeypatch.setattr(runner, "report", lambda results: "")
+    demo = Path(__file__).parents[2] / "stores" / "demo" / "store.toml"
+    assert cli.main(["check", str(demo), *extra]) == 0
+    assert seen == [expected]

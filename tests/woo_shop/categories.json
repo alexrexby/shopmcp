@@ -1,0 +1,46 @@
+[
+ {
+  "id": 10,
+  "name": "Посуда",
+  "slug": "posuda",
+  "description": "",
+  "parent": 0,
+  "count": 4,
+  "image": null,
+  "review_count": 0,
+  "permalink": "https://shop.example/product-category/posuda/"
+ },
+ {
+  "id": 11,
+  "name": "Бутылки",
+  "slug": "butylki",
+  "description": "",
+  "parent": 10,
+  "count": 1,
+  "image": null,
+  "review_count": 0,
+  "permalink": "https://shop.example/product-category/posuda/butylki/"
+ },
+ {
+  "id": 12,
+  "name": "Аксессуары",
+  "slug": "aksessuary",
+  "description": "",
+  "parent": 0,
+  "count": 2,
+  "image": null,
+  "review_count": 0,
+  "permalink": "https://shop.example/product-category/aksessuary/"
+ },
+ {
+  "id": 13,
+  "name": "Чай &amp; кофе",
+  "slug": "chaj-kofe",
+  "description": "",
+  "parent": 0,
+  "count": 1,
+  "image": null,
+  "review_count": 0,
+  "permalink": "https://shop.example/product-category/chaj-kofe/"
+ }
+]

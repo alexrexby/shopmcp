@@ -15,6 +15,7 @@ from shopmcp.config import StoreConfig
 from shopmcp.conformance.checks import CheckResult, Expect, run
 
 START_TIMEOUT = 60.0  # seconds: a local start indexes the feed first
+ONLINE_START_TIMEOUT = 600.0  # a live catalog API is crawled politely, page by page
 
 
 def bound_socket() -> socket.socket:
@@ -27,7 +28,7 @@ def bound_socket() -> socket.socket:
 
 
 @contextmanager
-def serve(app: ASGIApp) -> Iterator[str]:
+def serve(app: ASGIApp, start_timeout: float = START_TIMEOUT) -> Iterator[str]:
     """`app` under uvicorn on 127.0.0.1:<free port> in a thread; yields the base URL."""
     import uvicorn
 
@@ -39,7 +40,7 @@ def serve(app: ASGIApp) -> Iterator[str]:
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
     try:
-        deadline = time.monotonic() + START_TIMEOUT
+        deadline = time.monotonic() + start_timeout
         while not server.started:
             if not thread.is_alive() or time.monotonic() > deadline:
                 raise RuntimeError("the local server did not start (see the log above)")
@@ -52,7 +53,9 @@ def serve(app: ASGIApp) -> Iterator[str]:
 
 
 @contextmanager
-def serve_config(cfg: StoreConfig, config_dir: Path) -> Iterator[str]:
+def serve_config(
+    cfg: StoreConfig, config_dir: Path, start_timeout: float = START_TIMEOUT
+) -> Iterator[str]:
     """The store's own app, index in a temporary directory; yields the MCP endpoint URL.
 
     127.0.0.1 is added to allowed_hosts: a production config may list only its public host.
@@ -65,12 +68,14 @@ def serve_config(cfg: StoreConfig, config_dir: Path) -> Iterator[str]:
     local = cfg.model_copy(update={"server": server})
     with tempfile.TemporaryDirectory(prefix=f"shopmcp-check-{cfg.id}-") as data:
         app = build_app(local, data_dir=Path(data), config_dir=config_dir)
-        with serve(app) as base:
+        with serve(app, start_timeout) as base:
             yield f"{base}{cfg.server.path}"
 
 
-def check_config(cfg: StoreConfig, config_dir: Path) -> list[CheckResult]:
-    with serve_config(cfg, config_dir) as url:
+def check_config(
+    cfg: StoreConfig, config_dir: Path, start_timeout: float = START_TIMEOUT
+) -> list[CheckResult]:
+    with serve_config(cfg, config_dir, start_timeout) as url:
         return run(url, Expect.from_config(cfg), local=True)
 
 
