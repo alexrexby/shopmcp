@@ -122,10 +122,11 @@ BASE = {"v": 1, "kid": "1", "s": STORE, "iat": IAT, "exp": EXP, "jti": JTI}
         ({"exp": "1760486400"}, "malformed"),
         ({"iat": IAT + 3600}, "future"),
         ({"l": []}, "lines"),
-        ({"l": [["<script>", None, "1", {}]]}, "lines"),  # outside the id alphabet
+        ({"l": [["1", None, "1", {"Size": "v" * 201}]]}, "lines"),  # option value too long
         ({"l": [["1", None, "0", {}]]}, "lines"),
         ({"l": [["1", None, "NaN", {}]]}, "lines"),
         ({"l": [["1", None, 1, {}]]}, "lines"),  # quantity is a decimal string
+        ({"l": [["a\x00b", None, "1", {}]]}, "lines"),  # control character in the id
     ],
 )
 def test_signed_but_invalid_payload(change, error):

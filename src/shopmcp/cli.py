@@ -12,19 +12,28 @@ import logging
 import os
 import re
 import sys
+import textwrap
 import tomllib
-from collections.abc import Sequence
+import urllib.parse
+from collections.abc import Mapping, Sequence
 from importlib.resources import files
 from pathlib import Path
 from string import Template
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from shopmcp.config import ConfigError, StoreConfig, load
-from shopmcp.i18n import LOCALES
+from shopmcp.config import MIN_SECRET_BYTES, ConfigError, StoreConfig, load
+from shopmcp.engines import CART_SECRET, PRESETS, Engine, Preset
+from shopmcp.i18n import LOCALES, L10n
+
+if TYPE_CHECKING:
+    from shopmcp.detect import Detection
 
 # Placeholder the conformance search must fail on until the store owner edits it.
 SAMPLE_QUERY_PLACEHOLDER = "CHANGE-ME"
+FEED_PLACEHOLDER = "CHANGE-ME"  # no --feed: the feed URL is the owner's to fill in
+CART_PATH_DEFAULT = "cart"  # PrestaShop's cart path in an English storefront
 # Where adapters keep their index; `serve` and `index` must agree on it. /data in the image.
 DATA_DIR_ENV = "SHOPMCP_DATA_DIR"
 
@@ -105,12 +114,196 @@ def _toml_str(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, list | tuple):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    return _toml_str(str(value))
+
+
+def _comment(text: L10n | str, prefix: str = "") -> list[str]:
+    """`# en` then `# ru` lines, wrapped; a plain string is one language-neutral comment."""
+    parts = [text.en, text.ru] if isinstance(text, L10n) else [text]
+    lines = []
+    for part in parts:
+        lines += textwrap.wrap(prefix + part, 88, initial_indent="# ", subsequent_indent="# ")
+    return lines
+
+
+def _line(key: str, value: Any, comment: str | None = None, *, commented: bool = False) -> str:
+    text = f"{'# ' if commented else ''}{key} = {_toml_value(value)}"
+    return f"{text:<35} # {comment}" if comment else text
+
+
+def _fill(value: Any, slots: Mapping[str, str]) -> Any:
+    """Replace the preset's scaffold-time placeholders (`{host}`, `{feed}`, `{cart_path}`)."""
+    if isinstance(value, str):
+        for name, repl in slots.items():
+            value = value.replace("{" + name + "}", repl)
+        return value
+    if isinstance(value, list | tuple):
+        return [_fill(v, slots) for v in value]
+    return value
+
+
+# What the owner fills in by hand, per preset `edit` key.
+_EDIT = {
+    "adapter.feed": L10n(
+        en="feed URL from the store admin (https) or a path from this file",
+        ru="URL фида из админки магазина (https) или путь от этого файла",
+    ),
+    "cart.secret": L10n(
+        en=f"set SHOPMCP_CART_SECRET (>= {MIN_SECRET_BYTES} bytes) in the environment",
+        ru=f"задайте SHOPMCP_CART_SECRET (>= {MIN_SECRET_BYTES} байт) в окружении",
+    ),
+    "cart.line_template": L10n(
+        en=f"the cart path of the storefront language ({CART_PATH_DEFAULT}, panier...)",
+        ru=f"путь корзины на языке витрины ({CART_PATH_DEFAULT}, panier...)",
+    ),
+    "adapter.cart_ref": L10n(
+        en="how a feed id maps to the cart key: [adapter.cart_ref] below",
+        ru="как id фида соответствует ключу корзины: [adapter.cart_ref] ниже",
+    ),
+}
+# Inline notes on the [cart] lines a preset marks for editing.
+_CART_EDIT = {
+    "secret": "EDIT: SHOPMCP_CART_SECRET >= 32 bytes, environment only / только в окружении",
+    "line_template": "EDIT: cart path / путь корзины",
+}
+_BETA = L10n(
+    en="BETA: form_post is not verified in live browsers yet (check V1); it may replace "
+    "the customer's cart. Prefer hosting this server on a subdomain of the store.",
+    ru="БЕТА: form_post ещё не проверен в живых браузерах (проверка V1); может заменить "
+    "корзину покупателя. Размещайте сервер на поддомене магазина.",
+)
+_NO_ADAPTER = L10n(
+    en="No catalog adapter for this engine. The cart tool needs a catalog: a Google "
+    "Merchant feed (from an app) goes here; Atom feeds are not supported.",
+    ru="Адаптера каталога для этого движка нет. Инструменту корзины нужен каталог: сюда "
+    "— фид Google Merchant (из приложения); Atom-фиды не поддерживаются.",
+)
+_HEADLESS = L10n(
+    en="line_template removed: a headless storefront ignores add-to-cart links.",
+    ru="line_template убран: безголовая витрина не понимает ссылки-действия.",
+)
+
+
+def _edit_keys(preset: Preset | None, feed: str | None) -> list[str]:
+    keys = list(preset.edit) if preset else []
+    reads_feed = preset is None or preset.adapter is None or "feed" in preset.adapter
+    if reads_feed and feed is None and "adapter.feed" not in keys:
+        keys.insert(0, "adapter.feed")
+    if feed is not None and "adapter.feed" in keys:
+        keys.remove("adapter.feed")  # given on the command line
+    return keys
+
+
+def _adapter_lines(preset: Preset | None, feed: str | None, slots: Mapping[str, str]) -> str:
+    feed_note = "https URL or path from this file / https-URL или путь от этого файла"
+    edit = "EDIT: " if feed is None else ""
+    if preset is None:
+        return "\n".join(
+            [
+                _line("kind", "yml"),
+                _line("feed", feed or FEED_PLACEHOLDER, edit + feed_note),
+                _line("refresh_minutes", 60),
+                _line(
+                    "stale_minutes",
+                    180,
+                    "older index: /healthz 503 / индекс старше",
+                    commented=True,
+                ),
+            ]
+        )
+    lines = []
+    adapter = preset.adapter
+    if adapter is None:
+        lines += _comment(_NO_ADAPTER)
+        adapter = {"kind": "feed", "feed": "{feed}"}
+    for key, value in adapter.items():
+        note = None
+        if key == "feed":
+            note = ("EDIT: " if "adapter.feed" in _edit_keys(preset, feed) else "") + feed_note
+        lines.append(_line(key, _fill(value, slots), note))
+    if "adapter.cart_ref" in preset.edit:
+        lines += [
+            "",
+            *_comment(_EDIT["adapter.cart_ref"], "EDIT: "),
+            "# [adapter.cart_ref]",
+            '# pattern = "^(?P<product_id>[0-9]+)-(?P<variant_id>[0-9]+)$"',
+            '# options = { Size = "size" }',
+        ]
+    return "\n".join(lines)
+
+
+def _cart_lines(preset: Preset | None, slots: Mapping[str, str], *, headless: bool) -> str:
+    if preset is None:
+        return "\n".join(
+            [
+                _line("strategy", "link_list"),
+                '# url_template = "https://shop.example/cart/add?{items}"',
+                '# item_template = "id[]={id}&qty[]={qty}"',
+                '# item_separator = "&"',
+            ]
+        )
+    cart = dict(preset.cart)
+    lines = []
+    if headless and "line_template" in cart:
+        del cart["line_template"]
+        lines += _comment(_HEADLESS)
+    if cart["strategy"] == "form_post":
+        lines += _comment(_BETA)
+    for key, value in cart.items():
+        note = _CART_EDIT.get(key, "EDIT") if f"cart.{key}" in preset.edit else None
+        lines.append(_line(key, _fill(value, slots), note))
+    if preset.alt_cart and preset.alt_cart_when:
+        when = preset.alt_cart_when
+        lines += [
+            "",
+            *_comment(L10n(en=f"Instead, when: {when.en}", ru=f"Вместо, если: {when.ru}")),
+        ]
+        lines += [_line(k, _fill(v, slots), commented=True) for k, v in preset.alt_cart.items()]
+    if up := preset.cart_upgrade:
+        up = L10n(en=f"Upgrade: {_fill(up.en, slots)}", ru=f"Апгрейд: {_fill(up.ru, slots)}")
+        lines += ["", *_comment(up)]
+    return "\n".join(lines)
+
+
+def _engine_lines(preset: Preset | None) -> str:
+    if preset is None:
+        return ""
+    lines = [f"# Engine / Движок: {preset.name} ({preset.engine.value})"]
+    lines += _comment(preset.notes)
+    return "\n".join(lines) + "\n"
+
+
+def _host(site: str) -> str:
+    parts = urllib.parse.urlsplit(site)
+    host = (parts.hostname or "").lower()
+    return f"{host}:{parts.port}" if parts.port else host
+
+
 def render_store_toml(
-    store_id: str, *, feed: str, site: str, prefix: str | None = None, locale: str = "ru"
+    store_id: str,
+    *,
+    site: str,
+    feed: str | None = None,
+    prefix: str | None = None,
+    locale: str = "ru",
+    engine: Engine | None = None,
+    headless: bool = False,
 ) -> str:
-    """Store config text from the packaged template; validated before it is returned."""
+    """Store config text from the packaged template; validated before it is returned.
+
+    With `engine`, `[adapter]` and `[cart]` come from its preset in `engines.py`;
+    without, a YML feed and product page links, which fit any store."""
     if prefix is None:
         prefix = re.sub(r"[^a-z0-9]", "", store_id)[:16]
+    preset = PRESETS[engine] if engine else None
+    slots = {"host": _host(site), "cart_path": CART_PATH_DEFAULT, "feed": feed or FEED_PLACEHOLDER}
     template = Template((files("shopmcp") / "templates" / "store.toml.tmpl").read_text("utf-8"))
     text = template.substitute(
         id=_toml_str(store_id),
@@ -119,12 +312,18 @@ def render_store_toml(
         site=_toml_str(site),
         locale=_toml_str(locale),
         locale_name=locale,
-        feed=_toml_str(feed),
+        engine=_engine_lines(preset),
+        adapter=_adapter_lines(preset, feed, slots),
+        cart=_cart_lines(preset, slots, headless=headless),
         sample_query=_toml_str(SAMPLE_QUERY_PLACEHOLDER),
     )
+    raw = tomllib.loads(text)
+    # No ${ENV} substitution: the feed may reference a variable not set here. The cart
+    # secret is one by construction; a stand-in of valid length lets the rest be checked.
+    if raw.get("cart", {}).get("secret") == CART_SECRET:
+        raw["cart"]["secret"] = "0" * MIN_SECRET_BYTES
     try:
-        # No ${ENV} substitution: the feed may legitimately reference a variable not set here.
-        StoreConfig.model_validate(tomllib.loads(text))
+        StoreConfig.model_validate(raw)
     except ValidationError as e:
         problems = "; ".join(
             f"{'.'.join(map(str, err['loc']))}: {err['msg']}"
@@ -134,10 +333,60 @@ def render_store_toml(
     return text
 
 
+def _summary(engine: Engine | None, detection: "Detection | None", feed: str | None) -> list[str]:
+    """What scaffold found and what the owner still has to fill in."""
+    out = []
+    if detection is not None:
+        if engine is None:
+            out.append(f"engine: not determined: {detection.reason}")
+            if detection.candidates:
+                out.append("  candidates: " + ", ".join(e.value for e in detection.candidates))
+        else:
+            out.append(f"engine: {PRESETS[engine].name} (detected)")
+        for s in detection.signals:
+            out.append(f"  sign: {s.engine.value}: {s.what} ({s.weight.value})")
+        out += [f"  warning: {w}" for w in detection.warnings]
+        if detection.ecwid_store_id:
+            out.append(f"  Ecwid store id: {detection.ecwid_store_id}")
+    elif engine is not None:
+        out.append(f"engine: {PRESETS[engine].name} (--engine)")
+    preset = PRESETS[engine] if engine else None
+    if preset is None:
+        out.append("config: YML feed + product page links; rerun with --engine for a preset")
+    else:
+        out.append(f"cart: {preset.cart['strategy']}; {preset.notes.en}")
+        if preset.cart["strategy"] == "form_post":
+            out.append(f"  {_BETA.en}")
+        if feed and preset.adapter is not None and "feed" not in preset.adapter:
+            out.append(f"  --feed unused: adapter {preset.adapter['kind']!r} reads no feed")
+    keys = _edit_keys(preset, feed)
+    out.append("fill in by hand (lines marked EDIT): brand, instructions, server.public_url,")
+    out.append("  conformance.sample_query" + "".join(f", {k}" for k in keys))
+    for k in keys:
+        if k in _EDIT:
+            out.append(f"  {k}: {_EDIT[k].en}")
+    return out
+
+
 def _scaffold(args: argparse.Namespace) -> int:
-    # Rendering validates the id against its pattern before it becomes part of a path.
+    # Rendering validates the id and the site before any request and before the id
+    # becomes part of a path.
+    render_store_toml(args.store_id, feed=args.feed, site=args.site, prefix=args.prefix)
+    engine = Engine(args.engine) if args.engine else None
+    detection = None
+    if engine is None:
+        from shopmcp import detect
+
+        detection = detect.detect(detect.probe(args.site))
+        engine = detection.engine
     text = render_store_toml(
-        args.store_id, feed=args.feed, site=args.site, prefix=args.prefix, locale=args.locale
+        args.store_id,
+        feed=args.feed,
+        site=args.site,
+        prefix=args.prefix,
+        locale=args.locale,
+        engine=engine,
+        headless=bool(detection and detection.headless),
     )
     path = Path("stores") / args.store_id / "store.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +396,7 @@ def _scaffold(args: argparse.Namespace) -> int:
     except FileExistsError:
         print(f"error: {path} already exists, not overwritten", file=sys.stderr)
         return 1
+    print("\n".join(_summary(engine, detection, args.feed)))
     print(f"created {path}; edit the lines marked EDIT")
     return 0
 
@@ -175,10 +425,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=_check)
 
-    p = sub.add_parser("scaffold", help="create stores/<store_id>/store.toml")
+    p = sub.add_parser(
+        "scaffold",
+        help="create stores/<store_id>/store.toml; the engine is detected from the site (GET only)",
+    )
     p.add_argument("store_id")
-    p.add_argument("--feed", required=True, help="YML feed: path or https URL")
     p.add_argument("--site", required=True, help="store website URL")
+    p.add_argument(
+        "--engine",
+        choices=[e.value for e in Engine],
+        help="store engine: skips detection, takes its cart and catalog preset",
+    )
+    p.add_argument("--feed", help="catalog feed (YML or Google Merchant): path or https URL")
     p.add_argument("--prefix", help="tool name prefix (default: store id without dashes)")
     p.add_argument("--locale", choices=LOCALES, default="ru")
     p.set_defaults(func=_scaffold)

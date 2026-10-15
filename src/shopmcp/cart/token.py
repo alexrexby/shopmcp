@@ -25,6 +25,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from shopmcp.cart.refs import CartRef
+from shopmcp.errors import InvalidInput
 
 VERSION = 1
 MAX_LENGTH = 1800  # characters: the token goes into a URL next to the store's own path
@@ -154,7 +155,7 @@ def _lines(raw: Any) -> list[Line]:
         try:
             ref = CartRef(product_id=product_id, variant_id=variant_id, options=options)
             quantity = Decimal(qty)
-        except (ValidationError, InvalidOperation) as e:
+        except (ValidationError, InvalidInput, InvalidOperation) as e:
             raise TokenError("malformed lines") from e
         if not quantity.is_finite() or quantity <= 0:
             raise TokenError("malformed lines")

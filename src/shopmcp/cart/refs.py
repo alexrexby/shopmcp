@@ -7,14 +7,28 @@ the cart strategy builds its link from it.
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-# Ids end up in form field names and URLs: a closed alphabet, nothing to escape wrongly.
-ID_RE = r"^[A-Za-z0-9._:-]{1,128}$"
+from shopmcp.errors import InvalidInput
+
+# Any printable text: Cyrillic, `/` and spaces are real store ids. Each strategy escapes
+# the id for where it goes (URL path/query/fragment, JSON, form field), so no alphabet here.
+MAX_ID_LENGTH = 128
 MAX_OPTIONS = 20
 MAX_OPTION_VALUE = 200
 
-RefId = Annotated[str, StringConstraints(pattern=ID_RE)]
+
+def _cart_id(value: str) -> str:
+    # InvalidInput, not ValueError: pydantic passes it through as is, so cart_link_create
+    # tells the model which id cannot go into a link instead of failing with internal_error.
+    if not 1 <= len(value) <= MAX_ID_LENGTH:
+        raise InvalidInput(details={"invalid_cart_id": value, "reason": "length"})
+    if not value.isprintable():  # control, format (bidi) and line separator characters
+        raise InvalidInput(details={"invalid_cart_id": value, "reason": "control_character"})
+    return value
+
+
+RefId = Annotated[str, AfterValidator(_cart_id)]
 OptionValue = Annotated[str, StringConstraints(max_length=MAX_OPTION_VALUE)]
 
 

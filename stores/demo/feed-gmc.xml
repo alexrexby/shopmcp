@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic Google Merchant feed of a fictional store (demo.example), for tests. -->
+<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
+  <channel>
+    <title>Демо-одежда</title>
+    <link>https://demo.example</link>
+    <description>Вымышленный магазин одежды</description>
+    <item>
+      <g:id>T100-W-S</g:id>
+      <g:item_group_id>T100</g:item_group_id>
+      <title>Футболка базовая, белая, S</title>
+      <link>https://demo.example/p/t100-w-s</link>
+      <description>&lt;p&gt;Хлопок 100%.&lt;br&gt;Прямой крой.&lt;/p&gt;</description>
+      <g:image_link>https://demo.example/img/t100-w-s.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/t100-w-s-2.jpg</g:additional_image_link>
+      <g:price>1290.00 RUB</g:price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:gtin>4600000001007</g:gtin>
+      <g:product_type>Одежда &gt; Мужская &gt; Футболки</g:product_type>
+      <g:color>белый</g:color>
+      <g:size>S</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>T100-W-M</g:id>
+      <g:item_group_id>T100</g:item_group_id>
+      <title>Футболка базовая, белая, M</title>
+      <link>https://demo.example/p/t100-w-m</link>
+      <description>&lt;p&gt;Хлопок 100%.&lt;br&gt;Прямой крой.&lt;/p&gt;</description>
+      <g:image_link>https://demo.example/img/t100-w-m.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/t100-w-m-2.jpg</g:additional_image_link>
+      <g:price>1290.00 RUB</g:price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:gtin>4600000001014</g:gtin>
+      <g:product_type>Одежда &gt; Мужская &gt; Футболки</g:product_type>
+      <g:color>белый</g:color>
+      <g:size>M</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>T100-W-L</g:id>
+      <g:item_group_id>T100</g:item_group_id>
+      <title>Футболка базовая, белая, L</title>
+      <link>https://demo.example/p/t100-w-l</link>
+      <description>&lt;p&gt;Хлопок 100%.&lt;br&gt;Прямой крой.&lt;/p&gt;</description>
+      <g:image_link>https://demo.example/img/t100-w-l.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/t100-w-l-2.jpg</g:additional_image_link>
+      <g:price>1290.00 RUB</g:price>
+      <g:availability>out_of_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Мужская &gt; Футболки</g:product_type>
+      <g:color>белый</g:color>
+      <g:size>L</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>T100-B-M</g:id>
+      <g:item_group_id>T100</g:item_group_id>
+      <title>Футболка базовая, чёрная, M</title>
+      <link>https://demo.example/p/t100-b-m</link>
+      <description>Хлопок&amp;nbsp;100%</description>
+      <g:image_link>https://demo.example/img/t100-b-m.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/t100-b-m-2.jpg</g:additional_image_link>
+      <g:price>1290.00 RUB</g:price>
+      <g:sale_price>990.00 RUB</g:sale_price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Мужская &gt; Футболки</g:product_type>
+      <g:color>чёрный</g:color>
+      <g:size>M</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>H200-G-M</g:id>
+      <g:item_group_id>H200</g:item_group_id>
+      <title>Худи на молнии, серое, M</title>
+      <link>https://demo.example/p/h200-g-m</link>
+      <description>&lt;ul&gt;&lt;li&gt;Футер&lt;/li&gt;&lt;li&gt;Капюшон&lt;/li&gt;&lt;/ul&gt;</description>
+      <g:image_link>https://demo.example/img/h200-g-m.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/h200-g-m-2.jpg</g:additional_image_link>
+      <g:price>3490.00 RUB</g:price>
+      <g:sale_price>2790.00 RUB</g:sale_price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Мужская &gt; Худи</g:product_type>
+      <g:color>серый</g:color>
+      <g:size>M</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>H200-G-L</g:id>
+      <g:item_group_id>H200</g:item_group_id>
+      <title>Худи на молнии, серое, L</title>
+      <link>https://demo.example/p/h200-g-l</link>
+      <description>&lt;ul&gt;&lt;li&gt;Футер&lt;/li&gt;&lt;li&gt;Капюшон&lt;/li&gt;&lt;/ul&gt;</description>
+      <g:image_link>https://demo.example/img/h200-g-l.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/h200-g-l-2.jpg</g:additional_image_link>
+      <g:price>3490.00 RUB</g:price>
+      <g:availability>backorder</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Мужская &gt; Худи</g:product_type>
+      <g:color>серый</g:color>
+      <g:size>L</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>D300-S</g:id>
+      <g:item_group_id>D300</g:item_group_id>
+      <title>Платье льняное, S</title>
+      <link>https://demo.example/p/d300-s</link>
+      <description>Лён, &lt;b&gt;ручная&lt;/b&gt; вышивка.</description>
+      <g:image_link>https://demo.example/img/d300-s.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/d300-s-2.jpg</g:additional_image_link>
+      <g:price>4990.00 RUB</g:price>
+      <g:availability>preorder</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Женская &gt; Платья</g:product_type>
+      <g:color>бежевый</g:color>
+      <g:size>S</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>D300-M</g:id>
+      <g:item_group_id>D300</g:item_group_id>
+      <title>Платье льняное, M</title>
+      <link>https://demo.example/p/d300-m</link>
+      <description>Лён, &lt;b&gt;ручная&lt;/b&gt; вышивка.</description>
+      <g:image_link>https://demo.example/img/d300-m.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/d300-m-2.jpg</g:additional_image_link>
+      <g:price>4990.00 RUB</g:price>
+      <g:sale_price>4490.00 RUB</g:sale_price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Женская &gt; Платья</g:product_type>
+      <g:color>бежевый</g:color>
+      <g:size>M</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>SK400</g:id>
+      <title>Носки шерстяные, 2 пары</title>
+      <link>https://demo.example/p/sk400</link>
+      <description>Тёплые носки из шерсти мериноса.</description>
+      <g:image_link>https://demo.example/img/sk400.jpg</g:image_link>
+      <g:price>590.00 RUB</g:price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:gtin>4600000001021</g:gtin>
+      <g:product_type>Одежда &gt; Аксессуары &gt; Носки</g:product_type>
+      <g:color>серый</g:color>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>SC500</g:id>
+      <title>Шарф вязаный</title>
+      <link>https://demo.example/p/sc500</link>
+      <description><![CDATA[<p>Вязка &laquo;косы&raquo;.</p>]]></description>
+      <g:image_link>https://demo.example/img/sc500.jpg</g:image_link>
+      <g:price>1890.00 RUB</g:price>
+      <g:sale_price>1490.00 RUB</g:sale_price>
+      <g:availability>out_of_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Аксессуары &gt; Шарфы</g:product_type>
+      <g:color>синий</g:color>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>K600-40</g:id>
+      <g:item_group_id>K600</g:item_group_id>
+      <title>Кеды низкие, 40</title>
+      <link>https://demo.example/p/k600-40</link>
+      <description>Подошва из каучука.</description>
+      <g:image_link>https://demo.example/img/k600-40.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/k600-40-2.jpg</g:additional_image_link>
+      <g:price>3990.00 RUB</g:price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Обувь &gt; Кеды &gt; Низкие</g:product_type>
+      <g:color>белый</g:color>
+      <g:size>40</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>K600-42</g:id>
+      <g:item_group_id>K600</g:item_group_id>
+      <title>Кеды низкие, 42</title>
+      <link>https://demo.example/p/k600-42</link>
+      <description>Подошва из каучука.</description>
+      <g:image_link>https://demo.example/img/k600-42.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/k600-42-2.jpg</g:additional_image_link>
+      <g:price>3990.00 RUB</g:price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Обувь &gt; Кеды &gt; Низкие</g:product_type>
+      <g:color>белый</g:color>
+      <g:size>42</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>K600-44</g:id>
+      <g:item_group_id>K600</g:item_group_id>
+      <title>Кеды низкие, 44</title>
+      <link>https://demo.example/p/k600-44</link>
+      <description>Подошва из каучука.</description>
+      <g:image_link>https://demo.example/img/k600-44.jpg</g:image_link>
+      <g:additional_image_link>https://demo.example/img/k600-44-2.jpg</g:additional_image_link>
+      <g:price>3990.00 RUB</g:price>
+      <g:availability>preorder</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Обувь &gt; Кеды &gt; Низкие</g:product_type>
+      <g:color>белый</g:color>
+      <g:size>44</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>C700</g:id>
+      <title>Кепка хлопковая</title>
+      <link>https://demo.example/p/c700</link>
+      <description>Регулируемый ремешок.</description>
+      <g:image_link>https://demo.example/img/c700.jpg</g:image_link>
+      <g:price>890.00 RUB</g:price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Аксессуары &gt; Кепки</g:product_type>
+      <g:color>чёрный</g:color>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>B800</g:id>
+      <title>Рюкзак городской</title>
+      <link>https://demo.example/p/b800</link>
+      <description>Отделение для ноутбука 15&amp;quot;.</description>
+      <g:image_link>https://demo.example/img/b800.jpg</g:image_link>
+      <g:price>5490.00 RUB</g:price>
+      <g:sale_price>4990.00 RUB</g:sale_price>
+      <g:availability>backorder</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:gtin>4600000001038</g:gtin>
+      <g:product_type>Аксессуары &gt; Сумки &gt; Рюкзаки</g:product_type>
+      <g:color>чёрный</g:color>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>J900</g:id>
+      <title>Джинсы прямые</title>
+      <link>https://demo.example/p/j900</link>
+      <description>Деним 12 унций.</description>
+      <g:image_link>https://demo.example/img/j900.jpg</g:image_link>
+      <g:price>4290.00 RUB</g:price>
+      <g:availability>in_stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:brand>Северная нить</g:brand>
+      <g:product_type>Одежда &gt; Мужская &gt; Джинсы</g:product_type>
+      <g:color>синий</g:color>
+      <g:size>32</g:size>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+    <item>
+      <g:id>X999</g:id>
+      <title>Товар без цены</title>
+      <link>https://demo.example/p/x999</link>
+      <g:availability>in_stock</g:availability>
+      <g:shipping><g:country>RU</g:country><g:price>300.00 RUB</g:price></g:shipping>
+    </item>
+  </channel>
+</rss>

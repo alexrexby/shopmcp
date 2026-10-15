@@ -355,11 +355,6 @@ def test_adapter_base_cart_refs_default_to_the_feed_id():
 @pytest.mark.parametrize(
     "bad",
     [
-        {"product_id": "a b"},
-        {"product_id": "<x>"},
-        {"product_id": ""},
-        {"product_id": "x" * 129},
-        {"product_id": "1", "variant_id": 'a"b'},
         {"product_id": "1", "options": {str(i): "v" for i in range(21)}},
         {"product_id": "1", "options": {"Size": "v" * 201}},
         {"product_id": "1", "extra": "x"},
@@ -368,6 +363,22 @@ def test_adapter_base_cart_refs_default_to_the_feed_id():
 def test_cart_ref_rejects_what_cannot_go_into_a_form_or_url(bad):
     with pytest.raises(ValidationError):
         CartRef(**bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"product_id": ""},
+        {"product_id": "x" * 129},
+        {"product_id": "a\x00b"},
+        {"product_id": "1", "variant_id": "a\nb"},
+    ],
+)
+def test_cart_ref_bad_id_is_invalid_input_not_internal_error(bad):
+    # Any printable id is fine (each strategy escapes it); the rest names the id to the model.
+    with pytest.raises(InvalidInput) as e:
+        CartRef(**bad)
+    assert e.value.details is not None and "invalid_cart_id" in e.value.details
 
 
 def test_registry_knows_the_new_kinds():

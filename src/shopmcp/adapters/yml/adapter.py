@@ -8,12 +8,16 @@ does not stop the start either: the server comes up with /healthz at 503 and the
 build is retried in the background until the feed answers.
 Whatever a rebuild raises, the refresh goes on: a task that dies quietly would leave
 the store selling yesterday's prices behind a green health check.
+
+One adapter for kinds `yml` and `feed`: `format` picks the reader (YML or Google Merchant),
+`auto` tells them apart by the root element.
 """
 
 import asyncio
 import contextlib
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -26,9 +30,18 @@ from typing import Any, TypeVar
 import anyio.to_thread
 
 from shopmcp.adapters.base import AdapterBase, AdapterContext, SearchQuery
-from shopmcp.adapters.yml import index
-from shopmcp.adapters.yml.feed import FeedError, FeedStats, open_feed, parse, redact
+from shopmcp.adapters.yml import gmc, index
+from shopmcp.adapters.yml.feed import (
+    CartRefRule,
+    FeedError,
+    FeedStats,
+    open_feed,
+    parse,
+    redact,
+    sniff,
+)
 from shopmcp.capabilities import Capability
+from shopmcp.cart.refs import MAX_OPTIONS, CartRef
 from shopmcp.config import AdapterConfig, ConfigError
 from shopmcp.domain.models import Category, Facets, Product
 from shopmcp.errors import Unavailable
@@ -46,7 +59,9 @@ CAPABILITIES = frozenset(
         Capability.PROMOTIONS,
     }
 )
-_KEYS = {"feed", "refresh_minutes", "max_feed_mb", "stale_minutes"}
+_KEYS = {"feed", "format", "refresh_minutes", "max_feed_mb", "stale_minutes", "cart_ref"}
+FORMATS = ("auto", "yml", "gmc")
+_PARSERS = {"yml": parse, "gmc": gmc.parse}
 FEED_SECONDS = 30 * 60  # one whole feed read; the socket timeout bounds a single operation
 STALE_FAILURES = 3  # refreshes failed in a row that make the index stale
 NO_INDEX_RETRY = 60.0  # seconds between builds while there is no index to serve
@@ -63,8 +78,12 @@ class YmlAdapter(AdapterBase):
         refresh_minutes: int = 60,
         max_feed_mb: int = 200,
         stale_minutes: int | None = None,
+        format: str = "auto",
+        cart_ref: CartRefRule | None = None,
     ) -> None:
         self.feed = feed
+        self.format = format
+        self.cart_ref = cart_ref or CartRefRule()
         self._label = redact(feed)  # for logs: the URL may carry a secret from ${ENV}
         self.ctx = ctx
         self.refresh_minutes = refresh_minutes
@@ -150,6 +169,9 @@ class YmlAdapter(AdapterBase):
     async def by_barcode(self, barcode: str) -> Product | None:
         return await self._call(self._ready().by_barcode, barcode)
 
+    async def cart_refs(self, ids: Sequence[str]) -> dict[str, CartRef]:
+        return await self._call(self._ready().cart_refs, ids)
+
     async def analogs(self, product_id: str, limit: int) -> list[Product]:
         return await self._call(self._ready().analogs, product_id, limit)
 
@@ -204,7 +226,14 @@ class YmlAdapter(AdapterBase):
             max_bytes=self.max_bytes,
             max_seconds=FEED_SECONDS,
         ) as f:
-            built = index.build(path, parse(f, stats), feed_meta=feed_meta)
+            found, f = sniff(f)
+            fmt = found if self.format == "auto" else self.format
+            if fmt is None:
+                raise FeedError("unknown feed root: expected yml_catalog, rss or an Atom feed")
+            if found is not None and found != fmt:
+                raise FeedError(f"the feed is {found}, adapter.format says {fmt}")
+            items = _PARSERS[fmt](f, stats)
+            built = index.build(path, items, feed_meta=feed_meta, cart_ref=self.cart_ref)
         self._last_error = None
         self._failures = 0
         log.info(
@@ -254,14 +283,55 @@ class YmlAdapter(AdapterBase):
         )
 
 
+def _cart_ref(raw: object) -> CartRefRule:
+    """`[adapter.cart_ref]`: `pattern` (named groups `product_id`, optional `variant_id`)
+    and `options` (store option name -> feed param name), plan §2.4."""
+    if raw is None:
+        return CartRefRule()
+    if not isinstance(raw, dict):
+        raise ConfigError("adapter.cart_ref must be a table")
+    unknown = sorted(set(raw) - {"pattern", "options"})
+    if unknown:
+        raise ConfigError(f"adapter.cart_ref: unknown keys {unknown}")
+    pattern, options = raw.get("pattern"), raw.get("options", {})
+    compiled = None
+    if pattern is not None:
+        if not isinstance(pattern, str):
+            raise ConfigError("adapter.cart_ref.pattern must be a string")
+        try:
+            compiled = re.compile(pattern)
+        except re.error as e:
+            raise ConfigError(f"adapter.cart_ref.pattern: {e}") from e
+        groups = set(compiled.groupindex)
+        if "product_id" not in groups or groups - {"product_id", "variant_id"}:
+            raise ConfigError(
+                "adapter.cart_ref.pattern: named groups are product_id and optional variant_id"
+            )
+    if (
+        not isinstance(options, dict)
+        or len(options) > MAX_OPTIONS
+        or not all(
+            isinstance(k, str) and k and isinstance(v, str) and v for k, v in options.items()
+        )
+    ):
+        raise ConfigError(
+            f"adapter.cart_ref.options: up to {MAX_OPTIONS} store option -> feed param names"
+        )
+    return CartRefRule(pattern=compiled, options=options)
+
+
 def create(cfg: AdapterConfig, ctx: AdapterContext) -> YmlAdapter:
     extra = dict(cfg.model_extra or {})
     unknown = sorted(set(extra) - _KEYS)
     if unknown:
-        raise ConfigError(f"adapter: unknown keys for kind 'yml': {unknown}")
+        raise ConfigError(f"adapter: unknown keys for kind {cfg.kind!r}: {unknown}")
     feed = extra.get("feed")
     if not isinstance(feed, str) or not feed:
-        raise ConfigError("adapter.feed is required for kind 'yml'")
+        raise ConfigError(f"adapter.feed is required for kind {cfg.kind!r}")
+    fmt = extra.get("format", "auto")
+    if fmt not in FORMATS:
+        raise ConfigError(f"adapter.format must be one of {list(FORMATS)}")
+    cart_ref = _cart_ref(extra.get("cart_ref"))
     if not urllib.parse.urlsplit(feed).scheme:  # a path: relative to store.toml, not the CWD
         feed = str(ctx.config_dir / feed)
     refresh = extra.get("refresh_minutes", 60)
@@ -276,4 +346,12 @@ def create(cfg: AdapterConfig, ctx: AdapterContext) -> YmlAdapter:
     ):
         # Not above the refresh interval, every index would turn stale between two refreshes.
         raise ConfigError("adapter.stale_minutes must be an integer above refresh_minutes")
-    return YmlAdapter(feed, ctx, refresh_minutes=refresh, max_feed_mb=max_mb, stale_minutes=stale)
+    return YmlAdapter(
+        feed,
+        ctx,
+        refresh_minutes=refresh,
+        max_feed_mb=max_mb,
+        stale_minutes=stale,
+        format=fmt,
+        cart_ref=cart_ref,
+    )

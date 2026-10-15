@@ -95,6 +95,31 @@ def test_demo_feed_has_no_markup_in_any_string():
     assert MARKUP.search(FEED.read_text(encoding="utf-8"))
 
 
+def test_group_id_is_read():
+    _, products, _ = read(
+        offer("<url>https://s.example/1</url><price>1</price><name>Т</name>").replace(
+            b'<offer id="1">', b'<offer id="1-m" group_id=" 1 ">'
+        )
+    )
+    assert [(p.id, p.group_id) for p in products] == [("1-m", "1")]
+    _, demo, _ = read(FEED.read_bytes())
+    assert {p.group_id for p in demo} == {None}
+
+
+def test_windows_1251_feed_is_read():
+    # OpenCart YML modules emit windows-1251 (seen live); expat decodes it via Python codecs.
+    raw = (
+        '<?xml version="1.0" encoding="windows-1251"?>'
+        '<yml_catalog><shop><categories><category id="1">Молочка</category></categories>'
+        '<offers><offer id="1"><url>https://s.example/1</url><price>10</price>'
+        "<categoryId>1</categoryId><name>Сыр «Ёлочка»</name></offer></offers></shop></yml_catalog>"
+    ).encode("cp1251")
+    assert "Ёлочка".encode() not in raw  # positive control: the bytes are not UTF-8
+    categories, products, _ = read(raw)
+    assert [c.name for c in categories] == ["Молочка"]
+    assert [(p.name, p.category_path) for p in products] == [("Сыр «Ёлочка»", ["Молочка"])]
+
+
 # --- tolerance ----------------------------------------------------------------
 
 

@@ -2,7 +2,8 @@
 
 Memory stays flat on feeds of hundreds of MB: offers are parsed one by one and
 dropped from the tree right after mapping. An invalid offer is counted and skipped;
-it never stops the whole feed.
+it never stops the whole feed. The transport, the format sniffing and the cart key rule
+here are shared with the Google Merchant reader (`gmc.py`).
 """
 
 import gzip
@@ -13,12 +14,12 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO, Literal
 
 from pydantic import HttpUrl, ValidationError
 
@@ -36,6 +37,10 @@ _CURRENCY_ALIASES = {"RUR": "RUB"}
 # Transport and decompression failures that are not OSError: a connection cut inside a
 # chunked body (IncompleteRead) and a corrupt deflate stream (zlib.error).
 _READ_ERRORS = (OSError, EOFError, zlib.error, http.client.HTTPException)
+_SNIFF_BYTES = 1024 * 1024  # the root element must open within this much of the feed
+ATOM = "{http://www.w3.org/2005/Atom}"
+Format = Literal["yml", "gmc"]
+_ROOTS: dict[str, Format] = {"yml_catalog": "yml", "rss": "gmc", f"{ATOM}feed": "gmc"}
 
 
 class FeedError(Exception):
@@ -67,6 +72,80 @@ class _Capped:
         if self._seen > self._limit:
             raise FeedError(f"{self._what} exceeds {self._limit} bytes")
         return data
+
+
+class _Replay:
+    """`head` (already read by `sniff`) followed by the rest of the stream."""
+
+    def __init__(self, head: bytes, rest: BinaryIO) -> None:
+        self._head, self._rest = head, rest
+
+    def read(self, n: int = -1) -> bytes:
+        if not self._head:
+            return self._rest.read(n)
+        if n < 0:
+            data, self._head = self._head + self._rest.read(), b""
+        else:
+            data, self._head = self._head[:n], self._head[n:]
+        return data
+
+
+def sniff(stream: BinaryIO) -> tuple[Format | None, BinaryIO]:
+    """The feed format by its root element (`None`: neither YML nor Google Merchant) and
+    the stream to parse, the bytes read here included. Reads no further than the root."""
+    parser = ET.XMLPullParser(events=("start",))
+    head = b""
+    try:
+        while len(head) < _SNIFF_BYTES:
+            try:
+                chunk = stream.read(_CHUNK)
+            except _READ_ERRORS as e:
+                raise FeedError(f"cannot read feed: {e}") from e
+            if not head and _INTERNAL_DTD.search(chunk[:_PROLOG]):
+                raise FeedError("feed declares a DTD with entities, refused")
+            head += chunk
+            if not chunk:
+                break
+            parser.feed(chunk)
+            for _, elem in parser.read_events():
+                return _ROOTS.get(elem.tag), _Replay(head, stream)  # type: ignore[arg-type]
+    except ET.ParseError as e:
+        raise FeedError(f"invalid XML: {e}") from e
+    return None, _Replay(head, stream)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class CartRefRule:
+    """`[adapter.cart_ref]`: how a feed id becomes the store's cart key (plan §2.4).
+
+    `pattern` (named groups `product_id`, optional `variant_id`) splits the feed id; an id
+    it does not match, or no pattern, falls back to `group_id` as the product and the id
+    as its variant. `options`: store option name -> feed param name.
+    """
+
+    pattern: re.Pattern[str] | None = None
+    options: Mapping[str, str] = field(default_factory=dict)
+
+    def __call__(self, p: Product) -> dict[str, Any]:
+        """The raw `CartRef` fields: the index stores them, `CartRef` validates on read, so
+        a stricter or looser id rule applies without a rebuild."""
+        m = self.pattern.fullmatch(p.id) if self.pattern else None
+        if m and m.group("product_id"):
+            ref: dict[str, Any] = {"product_id": m.group("product_id")}
+            if "variant_id" in m.re.groupindex and m.group("variant_id"):
+                ref["variant_id"] = m.group("variant_id")
+        elif p.group_id:
+            ref = {"product_id": p.group_id, "variant_id": p.id}
+        else:
+            ref = {"product_id": p.id}
+        options = {}
+        for name, param in self.options.items():
+            value = next((x.value for x in p.params if x.name.casefold() == param.casefold()), None)
+            if value is not None:
+                options[name] = value
+        if options:
+            ref["options"] = options
+        return ref
 
 
 def redact(source: str) -> str:
@@ -288,6 +367,7 @@ def _offer(elem: ET.Element, paths: dict[str, list[str]]) -> Product | None:
             pictures=[u for u in map(_url, (p.text for p in elem.iterfind("picture"))) if u],
             description=text("description"),
             params=params,
+            group_id=clean_text(elem.get("group_id")),
         )
     except ValidationError:
         return None

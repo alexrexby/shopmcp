@@ -2,6 +2,7 @@
 
 import gzip
 import http.client
+import json
 import os
 import shutil
 import sqlite3
@@ -17,12 +18,13 @@ import anyio.lowlevel
 import pytest
 
 from shopmcp.adapters import registry
-from shopmcp.adapters.base import AdapterContext, SearchQuery, ShopAdapter
+from shopmcp.adapters.base import AdapterBase, AdapterContext, SearchQuery, ShopAdapter
 from shopmcp.adapters.yml import index
 from shopmcp.adapters.yml.adapter import CAPABILITIES, STALE_FAILURES, YmlAdapter, create
 from shopmcp.adapters.yml.feed import FeedStats, open_feed, parse, redact
 from shopmcp.adapters.yml.stem import variants
 from shopmcp.capabilities import Capability
+from shopmcp.cart.refs import CartRef
 from shopmcp.config import AdapterConfig, ConfigError
 from shopmcp.errors import Unavailable
 
@@ -84,11 +86,134 @@ def test_adapter_is_registered_and_declares_capabilities(tmp_path):
         ({"feed": "f.xml", "max_feed_mb": 0}, "max_feed_mb"),
         ({"feed": "f.xml", "refresh_minutes": 60, "stale_minutes": 60}, "stale_minutes"),
         ({"feed": "f.xml", "refresh_minutes": 0, "stale_minutes": True}, "stale_minutes"),
+        ({"feed": "f.xml", "format": "csv"}, "adapter.format"),
+        ({"feed": "f.xml", "cart_ref": "x"}, "must be a table"),
+        ({"feed": "f.xml", "cart_ref": {"patern": "x"}}, "unknown keys"),
+        ({"feed": "f.xml", "cart_ref": {"pattern": "("}}, "cart_ref.pattern"),
+        ({"feed": "f.xml", "cart_ref": {"pattern": r"(?P<id>\d+)"}}, "named groups"),
+        (
+            {"feed": "f.xml", "cart_ref": {"pattern": r"(?P<product_id>\d+)-(?P<sku>\d+)"}},
+            "named groups",
+        ),
+        ({"feed": "f.xml", "cart_ref": {"options": {"Size": 1}}}, "cart_ref.options"),
+        ({"feed": "f.xml", "cart_ref": {"options": ["size"]}}, "cart_ref.options"),
     ],
 )
 def test_create_rejects_bad_config(tmp_path, extra, match):
     with pytest.raises(ConfigError, match=match):
         create(AdapterConfig(kind="yml", **extra), ctx(tmp_path))
+
+
+def test_kind_feed_is_the_same_adapter_with_format_and_cart_ref(tmp_path):
+    a = registry.create(
+        AdapterConfig(
+            kind="feed",
+            feed=str(FEED),
+            format="yml",
+            cart_ref={"pattern": r"(?P<product_id>\d+)", "options": {"Fat": "Жирность"}},
+        ),
+        ctx(tmp_path),
+    )
+    assert isinstance(a, YmlAdapter) and a.format == "yml"
+    assert a.cart_ref.pattern is not None and a.cart_ref.options == {"Fat": "Жирность"}
+    with pytest.raises(ConfigError, match="kind 'feed'"):
+        create(AdapterConfig(kind="feed"), ctx(tmp_path))
+
+
+# --- cart refs ----------------------------------------------------------------
+
+GROUPED = """<yml_catalog><shop><offers>
+<offer id="10-1" group_id="10"><url>https://s.example/10-1</url><price>1</price><name>Футболка S</name>
+<param name="Размер">S</param><param name="Цвет">белый</param></offer>
+<offer id="20"><url>https://s.example/20</url><price>1</price><name>Кружка</name></offer>
+<offer id="Кр-1"><url>https://s.example/k</url><price>1</price><name>Кириллица</name></offer>
+</offers></shop></yml_catalog>"""
+
+
+async def grouped(tmp_path: Path, **cart_ref) -> YmlAdapter:
+    feed = tmp_path / "grouped.xml"
+    feed.write_text(GROUPED, encoding="utf-8")
+    extra = {"cart_ref": cart_ref} if cart_ref else {}
+    a = create(
+        AdapterConfig(kind="feed", feed=str(feed), refresh_minutes=0, **extra), ctx(tmp_path)
+    )
+    await a.start()
+    return a
+
+
+@pytest.mark.anyio
+async def test_cart_refs_default_group_is_the_product(tmp_path):
+    a = await grouped(tmp_path)
+    try:
+        assert await a.cart_refs(["10-1", "20", "nope"]) == {
+            "10-1": CartRef(product_id="10", variant_id="10-1"),
+            "20": CartRef(product_id="20"),
+            "nope": CartRef(product_id="nope"),  # not indexed: the AdapterBase default
+        }
+        assert await a.cart_refs([]) == {}
+    finally:
+        await a.close()
+
+
+@pytest.mark.anyio
+async def test_cart_refs_pattern_and_options(tmp_path):
+    a = await grouped(
+        tmp_path,
+        pattern=r"(?P<product_id>\d+)-(?P<variant_id>\d+)",
+        options={"Size": "размер", "Color": "Цвет", "Fit": "Посадка"},
+    )
+    try:
+        refs = await a.cart_refs(["10-1", "20"])
+        assert refs["10-1"] == CartRef(
+            product_id="10", variant_id="1", options={"Size": "S", "Color": "белый"}
+        )
+        # The pattern does not match "20": the group rule applies (no group: the id itself).
+        assert refs["20"] == CartRef(product_id="20")
+    finally:
+        await a.close()
+
+
+async def outcome(refs) -> object:
+    try:
+        return await refs
+    except Exception as e:  # noqa: BLE001 - the type is what is compared
+        return type(e)
+
+
+@pytest.mark.anyio
+async def test_cart_ref_is_validated_on_read_like_the_adapter_default(tmp_path):
+    # Stage A deviation 4: the index keeps the raw fields and CartRef validates them on
+    # read, so an id like "Кр-1" fares exactly as with AdapterBase.cart_refs, whatever the
+    # id rule of cart/refs.py is now, and a changed rule needs no index rebuild.
+    a = await grouped(tmp_path)
+    try:
+        ours = await outcome(a.cart_refs(["Кр-1"]))
+        assert ours == await outcome(AdapterBase().cart_refs(["Кр-1"]))
+        with sqlite3.connect(a._index_path()) as db:
+            (raw,) = db.execute("SELECT cart_ref_json FROM products WHERE id = 'Кр-1'").fetchone()
+        assert json.loads(raw) == {"product_id": "Кр-1"}
+    finally:
+        await a.close()
+
+
+@pytest.mark.anyio
+async def test_format_that_contradicts_the_feed_is_an_error(tmp_path):
+    a = create(
+        AdapterConfig(kind="feed", feed=str(FEED), format="gmc", refresh_minutes=0), ctx(tmp_path)
+    )
+    with pytest.raises(Unavailable):
+        await a.start()
+    assert "adapter.format says gmc" in a._last_error
+
+
+@pytest.mark.anyio
+async def test_unknown_feed_root_is_an_error(tmp_path):
+    feed = tmp_path / "page.xml"
+    feed.write_text("<html><body/></html>")
+    a = create(AdapterConfig(kind="feed", feed=str(feed), refresh_minutes=0), ctx(tmp_path))
+    with pytest.raises(Unavailable):
+        await a.start()
+    assert "unknown feed root" in a._last_error
 
 
 # --- search -------------------------------------------------------------------

@@ -17,19 +17,15 @@ instructions = """"""
 # payment = ""
 # regions = []
 
+$engine
 [adapter]
-kind = "yml"
-feed = $feed                        # https URL or path from this file / https-URL или путь от этого файла
-refresh_minutes = 60
-# stale_minutes = 180                # older index: /healthz 503 / индекс старше: /healthz 503
+$adapter
 
 [cart]
-# share_link | url_template | link_list. link_list works for any store: links to product pages.
+# link_list | url_template | json_fragment | form_post | receiver | share_link.
+# link_list works for any store: links to product pages.
 # link_list работает в любом магазине: ссылки на карточки товаров.
-strategy = "link_list"
-# url_template = "https://shop.example/cart/add?{items}"
-# item_template = "id[]={id}&qty[]={qty}"
-# item_separator = "&"
+$cart
 
 [limits]
 max_page_size = 20

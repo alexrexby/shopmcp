@@ -31,8 +31,7 @@ def lines(*pairs: tuple[str, str]) -> list[CartLine]:
 
 
 def refs(products: dict) -> dict[str, CartRef]:
-    # model_construct: "a/b" is outside CartRef's id alphabet, yet must still be quoted.
-    return {i: CartRef.model_construct(product_id=i) for i in products}
+    return {i: CartRef(product_id=i) for i in products}
 
 
 @pytest.mark.anyio
@@ -54,7 +53,9 @@ async def test_url_template_too_long_degrades_to_link_list(locale):
     ids = [f"{i:04d}" + "x" * 96 for i in range(30)]
     products = {i: make_product(i, f"Товар {i}") for i in ids}
     strategy = UrlTemplateStrategy(TEMPLATE, Texts(locale))
-    assert len(strategy.url(lines(*[(i, "1") for i in ids]))) > MAX_URL_LENGTH
+    assert len(strategy.url(lines(*[(i, "1") for i in ids]), products, refs(products))) > (
+        MAX_URL_LENGTH
+    )
     res = await strategy.handoff(lines(*[(i, "1") for i in ids]), products, refs(products))
     assert res.kind == "link_list" and res.url is None and len(res.links) == 30
     assert res.note and (res.note.isascii() == (locale == "en"))

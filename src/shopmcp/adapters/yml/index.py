@@ -18,18 +18,21 @@ from pathlib import Path
 from typing import Any
 
 from shopmcp.adapters.base import SearchQuery
+from shopmcp.adapters.yml.feed import CartRefRule
 from shopmcp.adapters.yml.stem import stem_text, stems, variants
+from shopmcp.cart.refs import CartRef
 from shopmcp.domain.models import Category, Facets, FacetValue, Product
 
 # Bumped whenever the tables or the stored Product json change: an index of another
 # version is treated as absent, never served as "the previous index".
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 _SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 -- position = feed order and the FTS rowid
 CREATE TABLE products(
     position INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, json TEXT NOT NULL,
-    category_id TEXT, price REAL NOT NULL, old_price REAL, available INTEGER);
+    category_id TEXT, price REAL NOT NULL, old_price REAL, available INTEGER,
+    group_id TEXT, cart_ref_json TEXT NOT NULL);
 CREATE INDEX products_category ON products(category_id);
 CREATE TABLE barcodes(barcode TEXT PRIMARY KEY, product_id TEXT NOT NULL);
 CREATE TABLE categories(
@@ -40,6 +43,7 @@ CREATE VIRTUAL TABLE products_fts USING fts5(
     name, vendor, category_path, params, description,
     content='', tokenize='unicode61 remove_diacritics 2');
 """
+DEFAULT_CART_REF = CartRefRule()  # group_id is the product, the feed id its variant
 # Column weights for bm25, in the order of the products_fts columns.
 _RANK = "bm25(products_fts, 10, 4, 3, 2, 1)"
 _FACETS = 10
@@ -68,12 +72,14 @@ def build(
     path: Path,
     items: Iterable[Category | Product],
     feed_meta: Callable[[], Mapping[str, str]] = dict,
+    cart_ref: Callable[[Product], Mapping[str, Any]] = DEFAULT_CART_REF,
 ) -> BuildStats:
     """Index `items` into a temp file next to `path`, then atomically replace `path`.
 
     `feed_meta` (`feed_date`, `feed_offers`, `feed_skipped`) is called after `items` is
     exhausted: a streaming parser learns them on the way. Stored in `meta` with the counts,
-    so `stats()` never scans the tables.
+    so `stats()` never scans the tables. `cart_ref` gives the raw `CartRef` fields of a
+    product (`[adapter.cart_ref]`); they are validated on read, see `Index.cart_refs`.
     """
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     os.close(fd)  # an empty file is an empty database to sqlite
@@ -93,7 +99,7 @@ def build(
                             json.dumps(item.path, ensure_ascii=False),
                         ),
                     )
-                elif _insert_product(db, item, products + 1):
+                elif _insert_product(db, item, products + 1, cart_ref(item)):
                     products += 1
                 else:
                     duplicates += 1
@@ -139,10 +145,12 @@ def sweep(path: Path, older_than: float) -> None:
             pass
 
 
-def _insert_product(db: sqlite3.Connection, p: Product, position: int) -> bool:
+def _insert_product(
+    db: sqlite3.Connection, p: Product, position: int, cart_ref: Mapping[str, Any]
+) -> bool:
     old = p.price.old.amount if p.price.old else None
     cur = db.execute(
-        "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+        "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         (
             position,
             p.id,
@@ -151,6 +159,8 @@ def _insert_product(db: sqlite3.Connection, p: Product, position: int) -> bool:
             float(p.price.current.amount),
             float(old) if old is not None else None,
             None if p.available is None else int(p.available),
+            p.group_id,
+            json.dumps(cart_ref, ensure_ascii=False),
         ),
     )
     if not cur.rowcount:
@@ -279,6 +289,25 @@ class Index:
                 ).fetchall()
             )
         return [Product.model_validate_json(found[i]) for i in wanted if i in found]
+
+    def cart_refs(self, ids: Sequence[str]) -> dict[str, CartRef]:
+        """Validated here, not at build: the `CartRef` id rule applies as it is now. An id
+        not in the index gets the adapter default, the feed id itself."""
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return {}
+        with closing(self._connect()) as db:
+            found = dict(
+                db.execute(
+                    "SELECT id, cart_ref_json FROM products"
+                    f" WHERE id IN ({','.join('?' * len(wanted))})",
+                    wanted,
+                ).fetchall()
+            )
+        return {
+            i: CartRef.model_validate_json(found[i]) if i in found else CartRef(product_id=i)
+            for i in wanted
+        }
 
     def by_barcode(self, barcode: str) -> Product | None:
         with closing(self._connect()) as db:

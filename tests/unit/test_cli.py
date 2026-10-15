@@ -10,11 +10,12 @@ from pathlib import Path
 import pytest
 from fakes import FakeAdapter
 
-from shopmcp import cli
+from shopmcp import cli, detect
 from shopmcp.adapters import registry
 from shopmcp.adapters.base import AdapterContext, ShopAdapter
 from shopmcp.config import AdapterConfig, load
 from shopmcp.conformance.runner import bound_socket
+from shopmcp.engines import PRESETS, Engine
 
 STUB_KINDS = ["bitrix", "insales", "http_json"]
 FEED = "https://shop.example/feed.xml"
@@ -25,6 +26,25 @@ SITE = "https://shop.example"
 def workdir(tmp_path, monkeypatch) -> Path:
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def offline_probe(monkeypatch) -> list[str]:
+    """Scaffold without --engine probes the site: here it gets canned evidence, no network."""
+    asked: list[str] = []
+    evidence = detect.Evidence(site=SITE, home=detect.Fetch(url=SITE, error="offline test"))
+
+    def fake(site: str) -> detect.Evidence:
+        asked.append(site)
+        return evidence
+
+    monkeypatch.setattr(detect, "probe", fake)
+    return asked
+
+
+def answer(monkeypatch, home: detect.Fetch, **probes: detect.Fetch) -> None:
+    ev = detect.Evidence(site=SITE, home=home, probes={Engine(k): v for k, v in probes.items()})
+    monkeypatch.setattr(detect, "probe", lambda site: ev)
 
 
 def scaffold(*extra: str) -> int:
@@ -85,6 +105,108 @@ def test_scaffold_escapes_values(workdir):
 def test_scaffold_bad_site_is_an_error(workdir, capsys):
     assert cli.main(["scaffold", "my-shop", "--feed", FEED, "--site", "not a url"]) == 1
     assert "site:" in capsys.readouterr().err
+
+
+# --- scaffold with an engine (plan-engines.md §2.7) -------------------------------------------
+
+
+@pytest.mark.parametrize("engine", list(Engine))
+def test_scaffold_engine_preset_loads(workdir, engine, monkeypatch, offline_probe, capsys):
+    monkeypatch.setenv("SHOPMCP_CART_SECRET", "s" * 32)
+    assert scaffold("--engine", engine.value) == 0
+    assert offline_probe == []  # --engine skips detection
+    path = workdir / "stores/my-shop/store.toml"
+    cfg = load(path)
+    preset = PRESETS[engine]
+    assert cfg.cart.strategy == preset.cart["strategy"]
+    assert cfg.adapter.kind == (preset.adapter or {"kind": "feed"})["kind"]
+    text = path.read_text("utf-8")
+    assert "{host}" not in text and "{cart_path}" not in text and "{feed}" not in text
+    assert preset.notes.en.split()[0] in text and preset.notes.ru.split()[0] in text
+    out = capsys.readouterr().out
+    beta = preset.cart["strategy"] == "form_post"
+    assert ("BETA" in text and "БЕТА" in text and "BETA" in out) == beta
+    if preset.adapter is None or "feed" in preset.adapter:
+        assert cfg.adapter.model_extra["feed"] == FEED and "adapter.feed" not in out
+
+
+def test_scaffold_without_feed_marks_it(workdir, monkeypatch, capsys):
+    monkeypatch.setenv("SHOPMCP_CART_SECRET", "s" * 32)
+    assert cli.main(["scaffold", "my-shop", "--site", SITE, "--engine", "insales"]) == 0
+    cfg = load(workdir / "stores/my-shop/store.toml")
+    assert cfg.adapter.model_extra["feed"] == cli.FEED_PLACEHOLDER
+    assert cfg.cart.action.host == "shop.example"
+    out = capsys.readouterr().out
+    assert "adapter.feed" in out and "cart.secret" in out and "SHOPMCP_CART_SECRET" in out
+
+
+def test_scaffold_secret_stays_an_env_reference(workdir):
+    assert scaffold("--engine", "shop_script") == 0
+    text = (workdir / "stores/my-shop/store.toml").read_text("utf-8")
+    assert 'secret = "${SHOPMCP_CART_SECRET}"' in text and "0" * 32 not in text
+
+
+def test_scaffold_feedless_adapter_says_feed_is_unused(workdir, capsys):
+    assert scaffold("--engine", "woocommerce") == 0
+    assert "--feed unused" in capsys.readouterr().out
+
+
+def test_scaffold_detects_the_engine(workdir, monkeypatch, capsys):
+    answer(
+        monkeypatch, detect.Fetch(url=SITE + "/", status=200, headers=(("powered-by", "Shopify"),))
+    )
+    assert scaffold() == 0
+    cfg = load(workdir / "stores/my-shop/store.toml")
+    assert cfg.cart.strategy == "url_template"
+    assert cfg.cart.url_template == "https://shop.example/cart/{items}?storefront=true"
+    out = capsys.readouterr().out
+    assert "Shopify (detected)" in out and "powered-by: Shopify header" in out
+
+
+def test_scaffold_headless_bitrix_drops_add_to_cart_links(workdir, monkeypatch, capsys):
+    home = detect.Fetch(
+        url=SITE + "/",
+        status=200,
+        headers=(("x-powered-cms", "Bitrix Site Manager"),),
+        body='<a href="/catalog/a/">',
+    )
+    answer(monkeypatch, home, bitrix=detect.Fetch(status=200, body="/_next/static/x.js"))
+    assert scaffold() == 0
+    cfg = load(workdir / "stores/my-shop/store.toml")
+    assert cfg.cart.strategy == "link_list" and cfg.cart.line_template is None
+    assert "Next.js" in capsys.readouterr().out
+
+
+def test_scaffold_undetermined_writes_the_generic_config(workdir, monkeypatch, capsys):
+    answer(monkeypatch, detect.Fetch(url=SITE + "/", status=403, body="blocked"))
+    assert scaffold() == 0
+    cfg = load(workdir / "stores/my-shop/store.toml")
+    assert (cfg.adapter.kind, cfg.cart.strategy) == ("yml", "link_list")
+    out = capsys.readouterr().out
+    assert "not determined" in out and "antibot" in out and "--engine" in out
+
+
+def test_scaffold_ambiguous_lists_candidates(workdir, monkeypatch, capsys):
+    home = detect.Fetch(url=SITE + "/", status=200, headers=(("x-tilda-server", "1"),))
+    answer(
+        monkeypatch,
+        home,
+        woocommerce=detect.Fetch(
+            status=200,
+            headers=(("content-type", "application/json"), ("x-wp-total", "1")),
+            body="[]",
+        ),
+    )
+    assert scaffold() == 0
+    out = capsys.readouterr().out
+    assert "candidates: tilda, woocommerce" in out
+    assert load(workdir / "stores/my-shop/store.toml").cart.strategy == "link_list"
+
+
+def test_scaffold_rejects_bad_input_before_probing(workdir, offline_probe):
+    assert cli.main(["scaffold", "Bad", "--site", SITE]) == 1
+    assert cli.main(["scaffold", "my-shop", "--site", "not a url"]) == 1
+    assert offline_probe == []
 
 
 # --- check (stage 2) ------------------------------------------------------------
