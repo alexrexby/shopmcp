@@ -64,8 +64,9 @@ def _mac(secret: bytes, body: str) -> str:
     return b64url(hmac.new(secret, body.encode("ascii"), hashlib.sha256).digest())
 
 
-def _qty(quantity: Decimal) -> str:
-    return format(quantity.normalize(), "f")  # Decimal("2.000") -> "2", never "2E+0"
+def qty_text(quantity: Decimal) -> str:
+    """The quantity as cart links and tokens write it: Decimal("2.000") -> "2", never "2E+0"."""
+    return format(quantity.normalize(), "f")
 
 
 def sign(
@@ -90,7 +91,7 @@ def sign(
         "iat": iat,
         "exp": iat + ttl,
         "jti": jti or b64url(_random.token_bytes(JTI_BYTES)),
-        "l": [[ref.product_id, ref.variant_id, _qty(q), dict(ref.options)] for ref, q in lines],
+        "l": [[ref.product_id, ref.variant_id, qty_text(q), dict(ref.options)] for ref, q in lines],
     }
     body = b64url(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
     token = f"{body}.{_mac(secret, body)}"

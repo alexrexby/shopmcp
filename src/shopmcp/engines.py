@@ -2,7 +2,8 @@
 
 Data only: detecting the engine lives in `detect.py`, rendering in the CLI. Strings may
 carry scaffold-time placeholders, replaced before the config is written and never seen
-at runtime: `{host}` (store host), `{feed}` (feed URL), `{cart_path}` (PrestaShop's
+at runtime: `{host}` (store host), `{base}` (host plus the path of `--site`, for an
+engine installed in a subdirectory), `{feed}` (feed URL), `{cart_path}` (PrestaShop's
 localized cart path). `${NAME}` is an environment variable, as anywhere in store.toml.
 Every preset is the default that needs no change on the store side; `cart_upgrade` says
 what a module or a snippet on the store would give instead.
@@ -19,6 +20,9 @@ from typing import Any
 from shopmcp.i18n import L10n
 
 CART_SECRET = "${SHOPMCP_CART_SECRET}"  # signs form_post/receiver tokens: >= 32 bytes
+# The g:id of the Google & YouTube app: shopify_<country>_<product>_<variant> (plan §2.4,
+# not verified live). Another id does not match and goes to the cart link as it is.
+SHOPIFY_FEED_ID = "^shopify_[A-Za-z]{2}_(?P<product_id>[0-9]+)_(?P<variant_id>[0-9]+)$"
 
 
 class Engine(StrEnum):
@@ -47,6 +51,8 @@ class Preset:
     alt_cart_when: L10n | None = None
     replaces_cart: bool = False  # the handoff replaces the customer's cart, not adds to it
     edit: tuple[str, ...] = field(default=())  # config keys the owner must fill in
+    # [adapter.cart_ref] written active, not as a commented example: the owner checks it.
+    cart_ref: Mapping[str, Any] | None = None
 
 
 def _feed(fmt: str) -> dict[str, Any]:
@@ -66,17 +72,23 @@ PRESETS: Mapping[Engine, Preset] = {
         adapter=None,
         notes=L10n(
             ru="Shopify публикует собственный MCP магазина: адаптер каталога не нужен, "
-            "здесь только ссылка на корзину. id в ссылке — variant_id.",
+            "здесь только ссылка на корзину. id в ссылке — variant_id: [adapter.cart_ref] "
+            "pattern берёт его из g:id вида shopify_RU_<товар>_<вариант>. Проверьте g:id "
+            "своего фида: id другого вида уйдёт в ссылку как есть.",
             en="Shopify publishes its own store MCP: no catalog adapter, only the cart "
-            "link here. The id in the link is the variant_id.",
+            "link here. The id in the link is the variant_id: [adapter.cart_ref] pattern "
+            "takes it from a g:id like shopify_US_<product>_<variant>. Check the g:id of "
+            "your feed: an id of another form goes to the link as it is.",
         ),
+        edit=("adapter.cart_ref",),
+        cart_ref={"pattern": SHOPIFY_FEED_ID},
     ),
     Engine.WOOCOMMERCE: Preset(
         engine=Engine.WOOCOMMERCE,
         name="WooCommerce",
         cart={
             "strategy": "link_list",
-            "line_template": "https://{host}/cart/?add-to-cart={id}&quantity={qty}",
+            "line_template": "https://{base}/cart/?add-to-cart={id}&quantity={qty}",
         },
         adapter={"kind": "woocommerce"},
         notes=L10n(
@@ -87,7 +99,7 @@ PRESETS: Mapping[Engine, Preset] = {
         ),
         alt_cart={
             "strategy": "url_template",
-            "url_template": "https://{host}/checkout-link/?products={items}",
+            "url_template": "https://{base}/checkout-link/?products={items}",
             "item_template": "{id}:{qty}",
             "item_separator": ",",
         },

@@ -7,6 +7,7 @@ qty 2 and a plain product with qty 1.
 
 import base64
 import json
+import re
 from decimal import Decimal
 from types import SimpleNamespace as LineIn
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -16,13 +17,14 @@ from fakes import FakeAdapter, make_product
 from pydantic import HttpUrl, TypeAdapter
 from test_tools_catalog import call
 
-from shopmcp.cart import strategies
+from shopmcp.adapters.yml.feed import CartRefRule
+from shopmcp.cart import strategies, token
 from shopmcp.cart.refs import CartRef
 from shopmcp.cart.strategies import MAX_URL_LENGTH
 from shopmcp.cart.token import verify
-from shopmcp.config import CartConfig, ReceiverCart
+from shopmcp.config import CartConfig, LinkListCart, ReceiverCart, UrlTemplateCart
 from shopmcp.domain.models import CartLine
-from shopmcp.engines import PRESETS, Engine
+from shopmcp.engines import PRESETS, SHOPIFY_FEED_ID, Engine
 from shopmcp.errors import InvalidInput
 from shopmcp.i18n import Texts
 
@@ -44,7 +46,7 @@ LINES = [
 def preset_cart(engine: Engine, *, alt: bool = False) -> CartConfig:
     preset = PRESETS[engine]
     raw = json.dumps(preset.alt_cart if alt else preset.cart)
-    raw = raw.replace("{host}", HOST).replace("{cart_path}", "panier")
+    raw = raw.replace("{host}", HOST).replace("{base}", HOST).replace("{cart_path}", "panier")
     return TypeAdapter(CartConfig).validate_python(json.loads(raw))
 
 
@@ -179,6 +181,76 @@ async def test_ecwid_options_and_non_numeric_ids():
             {"id": "007", "quantity": 1},  # a leading zero would be lost as a number
         ]
     }
+
+
+# --- Shopify: the variant id out of the app's g:id (review M4) -----------------------
+
+
+@pytest.mark.anyio
+async def test_shopify_feed_id_gives_the_variant_in_the_cart_link():
+    # The scaffold's [adapter.cart_ref] for Shopify: feed id -> pattern -> numeric variant.
+    rule = CartRefRule(pattern=re.compile(SHOPIFY_FEED_ID))
+    products = {
+        "shopify_US_8123_4456": make_product("shopify_US_8123_4456", "Mug").model_copy(
+            update={"group_id": "shopify_US_8123"}
+        ),
+        "SKU-9": make_product("SKU-9", "Tee"),  # another id form: goes to the link as it is
+    }
+    refs = {i: CartRef.model_validate(rule(p)) for i, p in products.items()}
+    assert refs["shopify_US_8123_4456"] == CartRef(product_id="8123", variant_id="4456")
+    lines = [
+        CartLine(product_id="shopify_US_8123_4456", quantity=Decimal(2)),
+        CartLine(product_id="SKU-9", quantity=Decimal(1)),
+    ]
+    res = await strategy(preset_cart(Engine.SHOPIFY)).handoff(lines, products, refs)
+    assert str(res.url) == f"https://{HOST}/cart/4456:2,SKU-9:1?storefront=true"
+
+
+# --- empty parameters: dropped per line, kept in a joined query (review M3) -----------
+
+
+@pytest.mark.anyio
+async def test_item_template_keeps_empty_parameters_to_hold_array_positions():
+    cart = UrlTemplateCart(
+        strategy="url_template",
+        url_template=f"https://{HOST}/cart/add?{{items}}",
+        item_template="product[]={product_id}&variant[]={variant_id}&qty[]={qty}",
+    )
+    lines = [LINES[1], LINES[0]]  # no variant first: its empty variant[] must stay
+    res = await strategy(cart).handoff(lines, PRODUCTS, REFS)
+    query = parse_qs(urlsplit(str(res.url)).query, keep_blank_values=True)
+    assert query == {"product[]": ["3003", "1001"], "variant[]": ["", "2002"], "qty[]": ["1", "2"]}
+
+
+@pytest.mark.anyio
+async def test_line_template_still_drops_an_empty_parameter():
+    cart = LinkListCart(line_template=f"https://{HOST}/add?p={{product_id}}&v={{variant_id}}")
+    res = await strategy(cart).handoff(LINES, PRODUCTS, REFS)
+    assert [str(link.add_url) for link in res.links] == [
+        f"https://{HOST}/add?p=1001&v=2002",
+        f"https://{HOST}/add?p=3003",
+    ]
+
+
+# --- {url} as a query value (review L1) ---------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_url_in_a_query_value_is_encoded():
+    page = f"https://{HOST}/p/2002?color=red&size=M#reviews"
+    products = {"2002": make_product("2002", "Кофе").model_copy(update={"url": HttpUrl(page)})}
+    cart = LinkListCart(line_template=f"https://{HOST}/cart/add?id={{id}}&ret={{url}}")
+    lines = [CartLine(product_id="2002", quantity=Decimal(1))]
+    res = await strategy(cart).handoff(lines, products, REFS)
+    add_url = urlsplit(str(res.links[0].add_url))
+    assert add_url.fragment == ""
+    assert parse_qs(add_url.query) == {"id": ["2002"], "ret": [page]}
+
+
+def test_quantity_has_one_formatter_for_links_and_tokens():
+    # Review L4: the link and the token wrote quantities with two copies of one formula.
+    assert not hasattr(strategies, "_qty") and not hasattr(token, "_qty")
+    assert token.qty_text(Decimal("2.000")) == "2" and token.qty_text(Decimal("2E+1")) == "20"
 
 
 # --- {url} that already has a query (Bitrix card links) -------------------------------

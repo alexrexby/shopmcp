@@ -24,9 +24,9 @@ from shopmcp.adapters.yml.adapter import CAPABILITIES, STALE_FAILURES, YmlAdapte
 from shopmcp.adapters.yml.feed import FeedStats, open_feed, parse, redact
 from shopmcp.adapters.yml.stem import variants
 from shopmcp.capabilities import Capability
-from shopmcp.cart.refs import CartRef
+from shopmcp.cart.refs import MAX_OPTION_VALUE, CartRef
 from shopmcp.config import AdapterConfig, ConfigError
-from shopmcp.errors import Unavailable
+from shopmcp.errors import InvalidInput, Unavailable
 
 ROOT = Path(__file__).resolve().parents[2]
 FEED = ROOT / "stores/demo/feed.xml"
@@ -192,6 +192,32 @@ async def test_cart_ref_is_validated_on_read_like_the_adapter_default(tmp_path):
         with sqlite3.connect(a._index_path()) as db:
             (raw,) = db.execute("SELECT cart_ref_json FROM products WHERE id = 'Кр-1'").fetchone()
         assert json.loads(raw) == {"product_id": "Кр-1"}
+    finally:
+        await a.close()
+
+
+@pytest.mark.anyio
+async def test_cart_ref_over_its_limits_is_invalid_input_naming_the_id(tmp_path):
+    # Review M2: an option value over MAX_OPTION_VALUE failed pydantic validation, and the
+    # ValidationError became internal_error for the whole cart. Now: which id, as input.
+    long = "х" * (MAX_OPTION_VALUE + 1)
+    feed = tmp_path / "long.xml"
+    feed.write_text(
+        GROUPED.replace('<param name="Размер">S</param>', f'<param name="Размер">{long}</param>'),
+        encoding="utf-8",
+    )
+    a = create(
+        AdapterConfig(
+            kind="feed", feed=str(feed), refresh_minutes=0, cart_ref={"options": {"Size": "размер"}}
+        ),
+        ctx(tmp_path),
+    )
+    await a.start()
+    try:
+        with pytest.raises(InvalidInput) as e:
+            await a.cart_refs(["20", "10-1"])
+        assert e.value.details == {"invalid_cart_ref": "10-1"}
+        assert await a.cart_refs(["20"]) == {"20": CartRef(product_id="20")}
     finally:
         await a.close()
 

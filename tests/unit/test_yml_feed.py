@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from shopmcp.adapters.yml.feed import MAX_OFFER_NODES, FeedError, FeedStats, open_feed, parse
+from shopmcp.adapters.yml.feed import (
+    MAX_CATEGORY_DEPTH,
+    MAX_OFFER_NODES,
+    FeedError,
+    FeedStats,
+    open_feed,
+    parse,
+)
 from shopmcp.adapters.yml.stem import normalize, stems
 from shopmcp.domain.models import Category, Product
 
@@ -309,3 +316,22 @@ def test_offer_with_too_many_children_is_skipped_quickly():
     assert time.monotonic() - started < 10  # remove() per element would be quadratic
     assert (stats.offers, stats.skipped) == (2, 1)
     assert peak < 16 * 1024 * 1024, peak
+
+
+def test_deep_category_chain_keeps_paths_short():
+    # Security Б1, the YML side: a parentId chain of N categories gave N²/2 path entries
+    # (3000 levels: 4.5 million) from a feed of ~170 KB.
+    n = 3000
+    chain = "".join(
+        f'<category id="{i}"{f' parentId="{i - 1}"' if i else ""}>C{i}</category>' for i in range(n)
+    )
+    raw = (
+        f"<yml_catalog><shop><categories>{chain}</categories><offers>"
+        f'<offer id="1"><url>https://s.example/1</url><price>1</price><name>T</name>'
+        f"<categoryId>{n - 1}</categoryId></offer></offers></shop></yml_catalog>"
+    ).encode()
+    categories, (p,), _ = read(raw)
+    assert len(categories) == n  # the tree itself is kept: parent_id is linear
+    assert sum(len(c.path) for c in categories) <= n * MAX_CATEGORY_DEPTH
+    assert p.category_path == [f"C{i}" for i in range(n - MAX_CATEGORY_DEPTH, n)]
+    assert categories[2].path == ["C0", "C1", "C2"]  # a shallow path is whole

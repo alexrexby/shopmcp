@@ -139,7 +139,7 @@ def _line(key: str, value: Any, comment: str | None = None, *, commented: bool =
 
 
 def _fill(value: Any, slots: Mapping[str, str]) -> Any:
-    """Replace the preset's scaffold-time placeholders (`{host}`, `{feed}`, `{cart_path}`)."""
+    """Replace the preset's scaffold-time placeholders (`{host}`, `{base}`, `{feed}`, `{cart_path}`)."""
     if isinstance(value, str):
         for name, repl in slots.items():
             value = value.replace("{" + name + "}", repl)
@@ -164,8 +164,10 @@ _EDIT = {
         ru=f"путь корзины на языке витрины ({CART_PATH_DEFAULT}, panier...)",
     ),
     "adapter.cart_ref": L10n(
-        en="how a feed id maps to the cart key: [adapter.cart_ref] below",
-        ru="как id фида соответствует ключу корзины: [adapter.cart_ref] ниже",
+        en="how a feed id maps to the cart key: check the g:id/offer id of your feed "
+        "against [adapter.cart_ref] below",
+        ru="как id фида соответствует ключу корзины: сверьте g:id/offer id своего фида "
+        "с [adapter.cart_ref] ниже",
     ),
 }
 # Inline notes on the [cart] lines a preset marks for editing.
@@ -228,7 +230,10 @@ def _adapter_lines(preset: Preset | None, feed: str | None, slots: Mapping[str, 
         if key == "feed":
             note = ("EDIT: " if "adapter.feed" in _edit_keys(preset, feed) else "") + feed_note
         lines.append(_line(key, _fill(value, slots), note))
-    if "adapter.cart_ref" in preset.edit:
+    if preset.cart_ref is not None:
+        lines += ["", *_comment(_EDIT["adapter.cart_ref"], "EDIT: "), "[adapter.cart_ref]"]
+        lines += [_line(k, v) for k, v in preset.cart_ref.items()]
+    elif "adapter.cart_ref" in preset.edit:
         lines += [
             "",
             *_comment(_EDIT["adapter.cart_ref"], "EDIT: "),
@@ -286,6 +291,11 @@ def _host(site: str) -> str:
     return f"{host}:{parts.port}" if parts.port else host
 
 
+def _base(site: str) -> str:
+    """Host and the path of `site` without the trailing slash: WordPress in `/shop/`."""
+    return _host(site) + urllib.parse.urlsplit(site).path.rstrip("/")
+
+
 def render_store_toml(
     store_id: str,
     *,
@@ -303,7 +313,12 @@ def render_store_toml(
     if prefix is None:
         prefix = re.sub(r"[^a-z0-9]", "", store_id)[:16]
     preset = PRESETS[engine] if engine else None
-    slots = {"host": _host(site), "cart_path": CART_PATH_DEFAULT, "feed": feed or FEED_PLACEHOLDER}
+    slots = {
+        "host": _host(site),
+        "base": _base(site),
+        "cart_path": CART_PATH_DEFAULT,
+        "feed": feed or FEED_PLACEHOLDER,
+    }
     template = Template((files("shopmcp") / "templates" / "store.toml.tmpl").read_text("utf-8"))
     text = template.substitute(
         id=_toml_str(store_id),
@@ -372,6 +387,10 @@ def _scaffold(args: argparse.Namespace) -> int:
     # Rendering validates the id and the site before any request and before the id
     # becomes part of a path.
     render_store_toml(args.store_id, feed=args.feed, site=args.site, prefix=args.prefix)
+    path = Path("stores") / args.store_id / "store.toml"
+    if path.exists():  # before the probe: up to 8 requests for nothing; `x` below still guards
+        print(f"error: {path} already exists, not overwritten", file=sys.stderr)
+        return 1
     engine = Engine(args.engine) if args.engine else None
     detection = None
     if engine is None:
@@ -388,7 +407,6 @@ def _scaffold(args: argparse.Namespace) -> int:
         engine=engine,
         headless=bool(detection and detection.headless),
     )
-    path = Path("stores") / args.store_id / "store.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("x", encoding="utf-8") as f:

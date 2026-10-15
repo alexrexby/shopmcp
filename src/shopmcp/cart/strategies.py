@@ -6,11 +6,13 @@ to the store (`form_post`), the store API (`share_link`), or the human (`link_li
 
 Templates share one set of placeholders, substituted in one pass (a value is never read as
 a placeholder again; other braces stay): `{id}` (variant or product), `{product_id}`,
-`{variant_id}` (empty without a variant), `{qty}`, `{url}` (product page, as is), `{items}`,
+`{variant_id}` (empty without a variant), `{qty}`, `{url}` (product page), `{items}`,
 `{payload}`, `{token}`. Every other value is percent-encoded whole, so it is safe in a URL
-path, query or fragment alike. A query parameter whose placeholder rendered empty is left
-out (`id_product_attribute=` of a product without combinations), as form_post leaves out an
-empty field.
+path, query or fragment alike; `{url}` goes as is where it starts the URL and percent-encoded
+in a query value (`ret={url}`). In a `line_template` (one line per link) a query parameter
+whose placeholder rendered empty is left out (`id_product_attribute=` of a product without
+combinations), as form_post leaves out an empty field. An `item_template` keeps it: lines
+are joined into one query, and `variant[]=` holds the place of a line in parallel arrays.
 """
 
 import base64
@@ -29,7 +31,7 @@ from pydantic import HttpUrl
 from shopmcp.adapters.base import ShopAdapter
 from shopmcp.capabilities import Capability
 from shopmcp.cart.refs import CartRef
-from shopmcp.cart.token import TokenError, sign
+from shopmcp.cart.token import TokenError, qty_text, sign
 from shopmcp.config import (
     CartConfig,
     ConfigError,
@@ -66,16 +68,12 @@ class CartStrategy(Protocol):
     ) -> CartHandoff: ...
 
 
-def _qty(quantity: Decimal) -> str:
-    return format(quantity.normalize(), "f")  # Decimal("2.000") -> "2", not "2.000" or "2E+0"
-
-
 def _values(line: CartLine, product: Product, ref: CartRef) -> dict[str, str]:
     return {
         "id": quote(ref.id, safe=""),
         "product_id": quote(ref.product_id, safe=""),
         "variant_id": quote(ref.variant_id or "", safe=""),
-        "qty": _qty(line.quantity),
+        "qty": qty_text(line.quantity),
         "url": str(product.url),  # already a valid URL: HttpUrl normalized it
     }
 
@@ -84,18 +82,22 @@ def _fill(template: str, values: Mapping[str, str]) -> str:
     return _PLACEHOLDER.sub(lambda m: values.get(m[1], m[0]), template)
 
 
-def _fill_query(template: str, values: Mapping[str, str]) -> str:
+def _fill_query(template: str, values: Mapping[str, str], *, drop_empty: bool) -> str:
+    """A query from a template; `drop_empty` leaves out a parameter whose placeholder
+    rendered empty. `{url}` is a value here, not the start of the URL: percent-encoded."""
+    if "url" in values:
+        values = {**values, "url": quote(values["url"], safe="")}
     params = []
     for param in template.split("&"):
         name, eq, value = param.partition("=")
         filled = _fill(value, values)
-        if eq and value and not filled:  # the placeholder had nothing to say: no parameter
+        if drop_empty and eq and value and not filled:  # the placeholder had nothing to say
             continue
         params.append(_fill(name, values) + eq + filled)
     return "&".join(params)
 
 
-def _fill_url(template: str, values: Mapping[str, str]) -> str:
+def _fill_url(template: str, values: Mapping[str, str], *, drop_empty: bool = False) -> str:
     """A URL from a template. Its query is appended to the one `{url}` may already have:
     `{url}?action=ADD2BASKET` on `https://shop.ru/p/1/?color=red` gives `...?color=red&action=`."""
     query_at, fragment_at = template.find("?"), template.find("#")
@@ -103,9 +105,8 @@ def _fill_url(template: str, values: Mapping[str, str]) -> str:
         return _fill(template, values)
     end = fragment_at if fragment_at > query_at else len(template)
     parts = urlsplit(_fill(template[:query_at], values))
-    query = "&".join(
-        q for q in (parts.query, _fill_query(template[query_at + 1 : end], values)) if q
-    )
+    filled = _fill_query(template[query_at + 1 : end], values, drop_empty=drop_empty)
+    query = "&".join(q for q in (parts.query, filled) if q)
     fragment = _fill(template[end + 1 :], values) if end < len(template) else parts.fragment
     return urlunsplit(parts._replace(query=query, fragment=fragment))
 
@@ -149,7 +150,8 @@ class LinkListStrategy:
         links = []
         for line in lines:
             product = products[line.product_id]
-            add_url = _fill_url(self._line, _values(line, product, refs[line.product_id]))
+            values = _values(line, product, refs[line.product_id])
+            add_url = _fill_url(self._line, values, drop_empty=True)
             links.append(_link(line, product, add_url))
         return CartHandoff(kind=self.kind, links=links)
 
@@ -175,8 +177,13 @@ class UrlTemplateStrategy:
         products: Mapping[str, Product],
         refs: Mapping[str, CartRef],
     ) -> str:
+        # Empty parameters stay: the store pairs `product[]` and `variant[]` by position.
         items = self._sep.join(
-            _fill_query(self._item, _values(line, products[line.product_id], refs[line.product_id]))
+            _fill_query(
+                self._item,
+                _values(line, products[line.product_id], refs[line.product_id]),
+                drop_empty=False,
+            )
             for line in lines
         )
         return _fill_url(self._url, {"items": items})

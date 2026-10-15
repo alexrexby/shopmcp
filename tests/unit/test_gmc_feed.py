@@ -6,6 +6,7 @@ import re
 import time
 import tracemalloc
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,15 @@ import pytest
 from shopmcp.adapters.base import AdapterContext, SearchQuery
 from shopmcp.adapters.yml import gmc
 from shopmcp.adapters.yml.adapter import YmlAdapter
-from shopmcp.adapters.yml.feed import MAX_OFFER_NODES, FeedError, FeedStats, open_feed, parse, sniff
+from shopmcp.adapters.yml.feed import (
+    MAX_CATEGORY_DEPTH,
+    MAX_OFFER_NODES,
+    FeedError,
+    FeedStats,
+    open_feed,
+    parse,
+    sniff,
+)
 from shopmcp.cart.refs import CartRef
 from shopmcp.domain.models import Category, Product
 
@@ -25,9 +34,11 @@ MARKUP = re.compile(r"&[a-z]+;|&#\d+;|<[a-zA-Z/]|\xa0")
 RSS = '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0"><channel>{}</channel></rss>'
 
 
-def read(raw: bytes) -> tuple[list[Category], list[Product], FeedStats]:
+def read(
+    raw: bytes, now: datetime | None = None
+) -> tuple[list[Category], list[Product], FeedStats]:
     stats = FeedStats()
-    items = list(gmc.parse(io.BytesIO(raw), stats))
+    items = list(gmc.parse(io.BytesIO(raw), stats, now=now))
     return (
         [i for i in items if isinstance(i, Category)],
         [i for i in items if isinstance(i, Product)],
@@ -234,6 +245,19 @@ def test_sniff_tells_formats_apart_and_replays_the_bytes(raw, fmt):
         ("1299.00 RUB", ("RUB", "1299.00")),
         ("RUB 10", ("RUB", "10")),
         ("10,5 rur", ("RUB", "10.5")),
+        # Digit groups (review M1): read when the marks cannot mean anything else.
+        ("1,299.00 USD", ("USD", "1299.00")),
+        ("1 299,00 RUB", ("RUB", "1299.00")),
+        ("1\u00a0299 RUB", ("RUB", "1299")),
+        ("1.299,00 EUR", ("EUR", "1299.00")),
+        ("1,299,000 USD", ("USD", "1299000")),
+        ("RUB 1 299", ("RUB", "1299")),
+        ("1.299 KWD", ("KWD", "1.299")),  # a dot is the spec's decimal mark
+        # Refused, never a price 1000 times off.
+        ("1,299 USD", None),  # 1299 or 1.299: no way to tell
+        ("1.299.00 RUB", None),
+        ("1,2,3 RUB", None),
+        ("12 5 RUB", None),
         ("10", None),  # no currency: not a Merchant price
         ("RUB 10 USD", None),
         ("-5 RUB", None),
@@ -241,8 +265,18 @@ def test_sniff_tells_formats_apart_and_replays_the_bytes(raw, fmt):
     ],
 )
 def test_price(price, expected):
-    got = gmc._price(price)
+    noted: list[str] = []
+    got = gmc._price(price, lambda reason, _: noted.append(reason))
     assert (got and (got[0], str(got[1]))) == expected
+    assert noted == (["ambiguous_price"] if price == "1,299 USD" else [])
+
+
+def test_ambiguous_price_skips_the_item_and_is_logged(caplog):
+    ambiguous = "<title>T</title><link>https://s.example/1</link><g:price>1,299 USD</g:price>"
+    with caplog.at_level("WARNING", logger=gmc.__name__):
+        _, products, stats = read(RSS.format(item(ambiguous) + item(GOOD, "2")).encode())
+    assert [p.id for p in products] == ["2"] and stats.skipped == 1
+    assert "1 items: price with a lone" in caplog.text and "1,299" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -257,6 +291,57 @@ def test_sale_price_that_is_no_discount_is_ignored(extra, current, old):
     body = f"<title>T</title><link>https://s.example/1</link><g:price>1000 RUB</g:price>{extra}"
     _, (p,), _ = read(RSS.format(item(body)).encode())
     assert p.price.current.amount == current and p.price.old is old
+
+
+# --- sale_price_effective_date (review H1) ------------------------------------
+
+NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "period, on_sale",
+    [
+        (None, True),  # no period: the sale holds
+        ("2026-10-01T00:00+03:00/2026-10-31T23:59+03:00", True),
+        ("2026-10-15T11:59Z/2026-10-15T12:01Z", True),
+        ("2016-02-24T11:07+0100/2026-10-15T15:01+0300", True),  # the spec's +hhmm, MSK
+        ("2026-10-20T00:00Z/2026-10-31T00:00Z", False),  # not started yet
+        ("2026-09-01T00:00Z/2026-10-15T12:00Z", False),  # ended exactly now
+        ("2026-10-01T00:00/2026-10-31T00:00", True),  # no offset: UTC
+        ("2026-10-01T00:00Z/", True),  # open end
+        ("/2026-10-14T00:00Z", False),  # open start, ended
+        ("garbage", False),  # present, unreadable: no discount
+        ("2026-10-01T00:00Z", False),  # one moment is not a period
+        ("2026-10-31T00:00Z/2026-10-01T00:00Z", False),  # reversed
+        ("/", False),
+    ],
+)
+def test_sale_price_holds_only_within_its_period(period, on_sale):
+    dated = f"<g:sale_price_effective_date>{period}</g:sale_price_effective_date>"
+    body = (
+        "<title>T</title><link>https://s.example/1</link><g:price>1000 RUB</g:price>"
+        f"<g:sale_price>800 RUB</g:sale_price>{dated if period is not None else ''}"
+    )
+    _, (p,), _ = read(RSS.format(item(body)).encode(), now=NOW)
+    if on_sale:
+        assert (p.price.current.amount, p.price.old.amount, p.price.discount_percent) == (
+            800,
+            1000,
+            20,
+        )
+    else:
+        assert (p.price.current.amount, p.price.old, p.price.discount_percent) == (1000, None, None)
+
+
+def test_unreadable_sale_period_is_logged(caplog):
+    body = (
+        "<title>T</title><link>https://s.example/1</link><g:price>1000 RUB</g:price>"
+        "<g:sale_price>800 RUB</g:sale_price>"
+        "<g:sale_price_effective_date>next week</g:sale_price_effective_date>"
+    )
+    with caplog.at_level("WARNING", logger=gmc.__name__):
+        read(RSS.format(item(body)).encode(), now=NOW)
+    assert "sale_price_effective_date unreadable" in caplog.text and "next week" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -353,3 +438,37 @@ def test_item_with_too_many_children_is_skipped_quickly():
     assert time.monotonic() - started < 10
     assert (stats.offers, stats.skipped) == (2, 1)
     assert peak < 16 * 1024 * 1024, peak
+
+
+# --- deep product_type (security Б1) ------------------------------------------
+
+
+def test_deep_product_type_is_cut_to_max_depth():
+    # 10 000 levels in ~70 KB: c743126 made 10 000 categories with N²/2 path entries.
+    deep = " > ".join(f"L{i}" for i in range(10_000))
+    body = f"{GOOD}<g:product_type>{deep}</g:product_type>"
+    categories, (p,), _ = read(RSS.format(item(body)).encode())
+    assert len(categories) == MAX_CATEGORY_DEPTH
+    assert max(len(c.path) for c in categories) == MAX_CATEGORY_DEPTH
+    assert p.category_path == [f"L{i}" for i in range(MAX_CATEGORY_DEPTH)]
+    assert p.category_id == categories[-1].id
+
+
+def test_product_type_is_read_up_to_merchant_limit():
+    # One long segment: depth does not cut it, the 750-character limit does.
+    body = f"{GOOD}<g:product_type>A &gt; {'b' * 5000}</g:product_type>"
+    categories, _, _ = read(RSS.format(item(body)).encode())
+    assert [len(c.name) for c in categories] == [1, gmc.MAX_PRODUCT_TYPE - len("A > ")]
+
+
+def test_repeated_product_type_is_mapped_once(monkeypatch):
+    calls: list[str | None] = []
+    real = gmc._categories
+    monkeypatch.setattr(gmc, "_categories", lambda t: calls.append(t) or real(t))
+    deep = " > ".join(f"L{i}" for i in range(500))
+    items = "".join(
+        item(f"{GOOD}<g:product_type>{deep}</g:product_type>", str(i)) for i in range(200)
+    )
+    categories, products, _ = read(RSS.format(items).encode())
+    assert len(products) == 200 and len(categories) == MAX_CATEGORY_DEPTH
+    assert len(calls) == 1

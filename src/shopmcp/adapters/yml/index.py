@@ -17,11 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from shopmcp.adapters.base import SearchQuery
 from shopmcp.adapters.yml.feed import CartRefRule
 from shopmcp.adapters.yml.stem import stem_text, stems, variants
 from shopmcp.cart.refs import CartRef
 from shopmcp.domain.models import Category, Facets, FacetValue, Product
+from shopmcp.errors import InvalidInput
 
 # Bumped whenever the tables or the stored Product json change: an index of another
 # version is treated as absent, never served as "the previous index".
@@ -292,7 +295,8 @@ class Index:
 
     def cart_refs(self, ids: Sequence[str]) -> dict[str, CartRef]:
         """Validated here, not at build: the `CartRef` id rule applies as it is now. An id
-        not in the index gets the adapter default, the feed id itself."""
+        not in the index gets the adapter default, the feed id itself. A stored ref that
+        fails validation is InvalidInput naming the id (an id rule raises its own)."""
         wanted = list(dict.fromkeys(ids))
         if not wanted:
             return {}
@@ -304,10 +308,17 @@ class Index:
                     wanted,
                 ).fetchall()
             )
-        return {
-            i: CartRef.model_validate_json(found[i]) if i in found else CartRef(product_id=i)
-            for i in wanted
-        }
+        refs = {}
+        for i in wanted:
+            try:
+                refs[i] = (
+                    CartRef.model_validate_json(found[i]) if i in found else CartRef(product_id=i)
+                )
+            except ValidationError as e:
+                # An option value over its limit and the like: the model learns which id,
+                # instead of the whole cart failing with internal_error.
+                raise InvalidInput(details={"invalid_cart_ref": i}) from e
+        return refs
 
     def by_barcode(self, barcode: str) -> Product | None:
         with closing(self._connect()) as db:

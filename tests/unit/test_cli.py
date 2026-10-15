@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-from fakes import FakeAdapter
+from fakes import FakeAdapter, make_product
 
 from shopmcp import cli, detect
 from shopmcp.adapters import registry
@@ -79,13 +79,14 @@ def test_scaffold_template_has_texts_table_and_both_languages(workdir):
     assert "${VAR}" in text  # the escaped `$${VAR}` reached the file as a literal
 
 
-def test_scaffold_does_not_overwrite(workdir, capsys):
+def test_scaffold_does_not_overwrite(workdir, capsys, offline_probe):
     path = workdir / "stores/my-shop/store.toml"
     path.parent.mkdir(parents=True)
     path.write_text("keep me", "utf-8")
     assert scaffold() == 1
     assert path.read_text("utf-8") == "keep me"
     assert "already exists" in capsys.readouterr().err
+    assert offline_probe == []  # review L3: refused before the site is probed
 
 
 @pytest.mark.parametrize("store_id", ["../evil", "Bad", "a"])
@@ -121,7 +122,7 @@ def test_scaffold_engine_preset_loads(workdir, engine, monkeypatch, offline_prob
     assert cfg.cart.strategy == preset.cart["strategy"]
     assert cfg.adapter.kind == (preset.adapter or {"kind": "feed"})["kind"]
     text = path.read_text("utf-8")
-    assert "{host}" not in text and "{cart_path}" not in text and "{feed}" not in text
+    assert not any(f"{{{slot}}}" in text for slot in ("host", "base", "cart_path", "feed"))
     assert preset.notes.en.split()[0] in text and preset.notes.ru.split()[0] in text
     out = capsys.readouterr().out
     beta = preset.cart["strategy"] == "form_post"
@@ -295,3 +296,31 @@ def test_stub_store_serves_only_store_info(workdir, kind):
         server.should_exit = True
         thread.join(timeout=5)
         sock.close()
+
+
+def test_woocommerce_in_a_subdirectory_keeps_the_path_in_cart_links(workdir):
+    # Review L2: WordPress at /shop/ has its cart at /shop/cart/, not at the root.
+    args = ["scaffold", "my-shop", "--feed", FEED, "--engine", "woocommerce"]
+    assert cli.main([*args, "--site", SITE + "/shop/"]) == 0
+    text = (workdir / "stores/my-shop/store.toml").read_text("utf-8")
+    cfg = load(workdir / "stores/my-shop/store.toml")
+    assert cfg.cart.line_template == (
+        "https://shop.example/shop/cart/?add-to-cart={id}&quantity={qty}"
+    )
+    assert "https://shop.example/shop/checkout-link/?products={items}" in text  # alt_cart
+
+
+def test_shopify_scaffold_writes_the_variant_rule_for_the_owner_to_check(workdir, capsys):
+    # Review M4: the cart link needs the variant id, the app's g:id is shopify_US_<p>_<v>.
+    assert scaffold("--engine", "shopify") == 0
+    path = workdir / "stores/my-shop/store.toml"
+    cfg = load(path)
+    adapter = registry.create(
+        cfg.adapter, AdapterContext(data_dir=workdir, http_timeout=5, store_id="my-shop")
+    )
+    product = make_product("shopify_US_8123_4456", "Mug")
+    assert adapter.cart_ref(product) == {"product_id": "8123", "variant_id": "4456"}
+    assert adapter.cart_ref(make_product("SKU-9", "Tee")) == {"product_id": "SKU-9"}
+    out = capsys.readouterr().out
+    assert "adapter.cart_ref" in out and "g:id" in out
+    assert "\n[adapter.cart_ref]\npattern = " in path.read_text("utf-8")

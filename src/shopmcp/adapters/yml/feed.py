@@ -29,6 +29,9 @@ from shopmcp.domain.text import clean_text
 _CHUNK = 64 * 1024
 _PROLOG = 4096
 MAX_OFFER_NODES = 10_000  # elements inside one <offer>; more is not a product, it is an attack
+# Names in a category path: a chain of N levels costs N² path entries, a few KB of feed
+# would take GBs. Real catalogs stay within 5-6 levels.
+MAX_CATEGORY_DEPTH = 10
 # Stdlib expat never resolves external entities and caps entity expansion (>=2.4.1);
 # a feed has no business declaring entities at all, so an internal DTD is refused.
 _INTERNAL_DTD = re.compile(rb"<!DOCTYPE[^>]*\[|<!ENTITY")
@@ -280,13 +283,17 @@ def _prune(stack: list[ET.Element], keep: ET.Element | None) -> None:
 
 
 def _paths(raw: dict[str, tuple[str, str | None]]) -> dict[str, list[str]]:
-    """Category id -> names from the root down; cycles and dangling parents are cut."""
+    """Category id -> names from the root down; cycles and dangling parents are cut, and
+    so is everything above `MAX_CATEGORY_DEPTH` levels: the path ends with the category
+    itself, `parent_id` still holds the whole tree."""
     paths: dict[str, list[str]] = {}
     for cid in raw:
         chain: list[str] = []
         seen: set[str] = set()
         cur: str | None = cid
-        while cur is not None and cur in raw and cur not in seen:
+        while (
+            cur is not None and cur in raw and cur not in seen and len(chain) < MAX_CATEGORY_DEPTH
+        ):
             seen.add(cur)
             name, cur = raw[cur]
             chain.append(name)

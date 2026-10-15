@@ -314,6 +314,7 @@ def test_incomplete_cart_is_rejected(tmp_path, monkeypatch, cart, match):
 
 SCAFFOLD = {
     "{host}": "shop.example",
+    "{base}": "shop.example",
     "{feed}": "https://shop.example/feed.xml",
     "{cart_path}": "cart",
 }
