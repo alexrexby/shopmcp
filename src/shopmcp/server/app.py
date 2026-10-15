@@ -164,6 +164,14 @@ def build_app(
             return JSONResponse({"status": "stale", "store": cfg.id, **health}, status_code=503)
         return JSONResponse({"status": "ok", "store": cfg.id, **health})
 
+    if cfg.cart.strategy == "form_post":
+        # Imported only here: a store without the trampoline does not depend on it. Outside
+        # the auth (a customer's browser opens it), under the rate limit like any request.
+        from shopmcp.cart.form_post import PATH
+        from shopmcp.server.trampoline import route
+
+        server.custom_route(PATH + "{token}", methods=["GET"])(route(cfg, texts))
+
     # host and allowed_hosts always explicit: with the default host the SDK allows only
     # localhost Host headers, and everything behind a reverse proxy is rejected.
     app: ASGIApp = server.streamable_http_app(

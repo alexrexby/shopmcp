@@ -24,7 +24,7 @@ from shopmcp.cart.strategies import MAX_URL_LENGTH
 from shopmcp.cart.token import verify
 from shopmcp.config import CartConfig, LinkListCart, ReceiverCart, UrlTemplateCart
 from shopmcp.domain.models import CartLine
-from shopmcp.engines import PRESETS, SHOPIFY_FEED_ID, Engine
+from shopmcp.engines import CART_SECRET, PRESETS, SHOPIFY_FEED_ID, Engine
 from shopmcp.errors import InvalidInput
 from shopmcp.i18n import Texts
 
@@ -47,6 +47,7 @@ def preset_cart(engine: Engine, *, alt: bool = False) -> CartConfig:
     preset = PRESETS[engine]
     raw = json.dumps(preset.alt_cart if alt else preset.cart)
     raw = raw.replace("{host}", HOST).replace("{base}", HOST).replace("{cart_path}", "panier")
+    raw = raw.replace(CART_SECRET, SECRET)  # form_post: the ${ENV} reference is load()'s job
     return TypeAdapter(CartConfig).validate_python(json.loads(raw))
 
 
@@ -147,8 +148,9 @@ async def test_preset_golden_links(engine, alt, kind, url, add_urls):
 
 
 def test_golden_covers_every_get_preset():
-    # form_post (InSales, Shop-Script alt) belongs to the trampoline tests; a link_list
-    # without line_template is plain product page links, the same for every engine.
+    # form_post (InSales, Shop-Script alt): test_form_post_presets_link_to_the_trampoline
+    # here, the page in test_trampoline.py; a link_list without line_template is plain
+    # product page links, the same for every engine.
     covered = {(g[0], g[1]) for g in GOLDEN}
     for engine, preset in PRESETS.items():
         for alt, cart in ((False, preset.cart), (True, preset.alt_cart)):
@@ -372,6 +374,24 @@ async def test_receiver_link_is_a_signed_token_with_its_expiry():
     assert res.expires_at is not None and int(res.expires_at.timestamp()) == payload.exp
 
 
+# --- form_post ------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("engine", [Engine.INSALES, Engine.SHOP_SCRIPT])
+async def test_form_post_presets_link_to_the_trampoline(engine):
+    res = await strategy(preset_cart(engine, alt=True)).handoff(LINES, PRODUCTS, REFS)
+    url = urlsplit(str(res.url))
+    assert res.kind == "form_post" and (url.scheme, url.netloc) == ("https", "mcp.shop.example")
+    assert url.path.startswith("/cart/h/") and not url.query
+    payload = verify(
+        url.path.removeprefix("/cart/h/"), store="demo", secrets={"1": SECRET.encode()}
+    )
+    assert payload.lines == [(REFS["2002"], Decimal(2)), (REFS["3003"], Decimal(1))]
+    assert res.expires_at is not None and int(res.expires_at.timestamp()) == payload.exp
+    assert [link.add_url for link in res.links] == [None, None]
+
+
 # --- degradation over MAX_URL_LENGTH ---------------------------------------------------
 
 LONG = [f"{i:04d}" + "x" * 120 for i in range(20)]
@@ -395,8 +415,18 @@ def long_cart() -> tuple[list[CartLine], dict, dict]:
         preset_cart(Engine.ECWID),
         preset_cart(Engine.ECWID, alt=True),
         receiver(),  # the token itself is over its limit first
+        preset_cart(Engine.INSALES, alt=True),
+        preset_cart(Engine.SHOP_SCRIPT, alt=True),
     ],
-    ids=["shopify", "woo-checkout-link", "ecwid", "ecwid-wix", "receiver"],
+    ids=[
+        "shopify",
+        "woo-checkout-link",
+        "ecwid",
+        "ecwid-wix",
+        "receiver",
+        "insales-form",
+        "shop-script-form",
+    ],
 )
 async def test_too_long_degrades_to_link_list(cart):
     lines, products, refs = long_cart()
