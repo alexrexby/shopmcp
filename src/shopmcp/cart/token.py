@@ -107,7 +107,7 @@ def verify(
     if len(token) > MAX_LENGTH:
         raise TokenError("token too long")
     body, dot, mac = token.partition(".")
-    if not dot or not body or not mac:
+    if not dot or not body or not mac or not token.isascii():
         raise TokenError("malformed token")
     try:
         data = json.loads(_unb64url(body))

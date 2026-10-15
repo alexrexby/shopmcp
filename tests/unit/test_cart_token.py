@@ -141,3 +141,10 @@ def test_signed_but_invalid_payload(change, error):
 def test_junk_is_token_error(junk):
     with pytest.raises(TokenError):
         verify(junk, store=STORE, secrets=KEYS, now=IAT)
+
+
+def test_non_ascii_signature_is_token_error():
+    """compare_digest refuses non-ASCII str: a forged path must be a 400, not a 500."""
+    body = b64url(json.dumps({"kid": "1"}).encode())
+    with pytest.raises(TokenError):
+        verify(f"{body}.\u00e9", store=STORE, secrets=KEYS)
