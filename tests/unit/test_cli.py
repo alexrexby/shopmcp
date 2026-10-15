@@ -122,7 +122,9 @@ def test_scaffold_engine_preset_loads(workdir, engine, monkeypatch, offline_prob
     assert cfg.cart.strategy == preset.cart["strategy"]
     assert cfg.adapter.kind == (preset.adapter or {"kind": "feed"})["kind"]
     text = path.read_text("utf-8")
-    assert not any(f"{{{slot}}}" in text for slot in ("host", "base", "cart_path", "feed"))
+    assert not any(
+        f"{{{slot}}}" in text for slot in ("origin", "host", "base", "cart_path", "feed")
+    )
     assert preset.notes.en.split()[0] in text and preset.notes.ru.split()[0] in text
     out = capsys.readouterr().out
     beta = "form_post" in (preset.cart["strategy"], (preset.alt_cart or {}).get("strategy"))
@@ -309,6 +311,53 @@ def test_woocommerce_in_a_subdirectory_keeps_the_path_in_cart_links(workdir):
         "https://shop.example/shop/cart/?add-to-cart={id}&quantity={qty}"
     )
     assert "https://shop.example/shop/checkout-link/?products={items}" in text  # alt_cart
+
+
+@pytest.mark.parametrize("site", ["http://shop.example:8080", "https://shop.example"])
+def test_scaffold_keeps_the_scheme_and_port_of_the_site(workdir, site):
+    # Check V1: `https://{host}` turned an http stand on :8080 into an https form action.
+    args = ["scaffold", "my-shop", "--feed", FEED, "--engine", "shop_script", "--site", site]
+    assert cli.main(args) == 0
+    text = (workdir / "stores/my-shop/store.toml").read_text("utf-8")
+    assert f'# action = "{site}/cart/add/"' in text
+    assert f'# finish_url = "{site}/cart/"' in text
+    args[4:6] = ["--engine", "woocommerce"]
+    (workdir / "stores/my-shop/store.toml").unlink()
+    assert cli.main([*args[:-1], site + "/shop/"]) == 0
+    cfg = load(workdir / "stores/my-shop/store.toml")
+    assert cfg.adapter.model_extra["site"] == site + "/shop"
+
+
+@pytest.mark.parametrize("site", ["http://shop.example:8080", "https://shop.example"])
+@pytest.mark.parametrize("engine", ["shop_script", "insales"])
+def test_scaffold_states_the_site_rule_of_form_post(workdir, capsys, site, engine):
+    # Check V1: from another site a cookie that is not SameSite=None loses the cart.
+    assert (
+        cli.main(["scaffold", "my-shop", "--feed", FEED, "--engine", engine, "--site", site]) == 0
+    )
+    text = " ".join((workdir / "stores/my-shop/store.toml").read_text("utf-8").split())
+    out = " ".join(capsys.readouterr().out.split())
+    for words in ("subdomain of the store", "SameSite=None", "поддомене магазина", "C11"):
+        assert words in text.replace("# ", ""), words
+    assert "subdomain of the store" in out and "SameSite=None" in out
+    http = site.startswith("http:")
+    assert ("The store is on http" in out) == http
+    assert ("Магазин на http" in text.replace("# ", "")) == http
+
+
+def test_shop_script_preset_states_the_v1_facts(workdir):
+    # Check V1 (Chromium): on https the chain keeps the cart from any site, on http only
+    # from a subdomain. The working default stays product links: Safari is not checked.
+    ss, insales = PRESETS[Engine.SHOP_SCRIPT], PRESETS[Engine.INSALES]
+    assert ss.cart["strategy"] == insales.cart["strategy"] == "link_list"
+    when = ss.alt_cart_when
+    assert when is not None and when != insales.alt_cart_when
+    assert all(w in when.en for w in ("SameSite=None", "https", "http,", "subdomain", "Safari"))
+    assert all(w in when.ru for w in ("SameSite=None", "https", "на http", "поддомена", "Safari"))
+    assert "Safari" in ss.notes.en and "Safari" in ss.notes.ru
+    assert scaffold("--engine", "shop_script") == 0
+    text = " ".join((workdir / "stores/my-shop/store.toml").read_text("utf-8").split())
+    assert "Instead, when: The form_post trampoline (BETA): checked in Chromium" in text
 
 
 def test_shopify_scaffold_writes_the_variant_rule_for_the_owner_to_check(workdir, capsys):

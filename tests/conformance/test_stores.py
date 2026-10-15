@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from shopmcp.config import load
-from shopmcp.conformance.runner import check_config
+from shopmcp.config import StoreConfig, load
+from shopmcp.conformance.runner import check_config, report
 
 STORES = sorted((Path(__file__).resolve().parents[2] / "stores").glob("*/store.toml"))
 
@@ -50,3 +50,48 @@ def test_url_without_config_infers_expectations():
     # port: without a config the resource must be the URL the client used, as behind a
     # misconfigured proxy. Everything else about auth passed.
     assert results["C13"].detail.startswith("metadata resource 'http://localhost:8000/mcp'")
+
+
+SHOP_SCRIPT_CHAIN = {
+    "strategy": "form_post",
+    "mode": "chain",
+    "action": "{site}/cart/add/",
+    "fields": [["product_id", "{product_id}"], ["quantity", "{qty}"]],
+    "finish_url": "{site}/cart/",
+    "secret": "c" * 32,
+}
+INSALES_SINGLE = {
+    "strategy": "form_post",
+    "mode": "single",
+    "action": "{site}/cart_items",
+    "fields": [["variant_ids[{id}]", "{qty}"]],
+    "secret": "c" * 32,
+}
+
+
+@pytest.mark.parametrize(
+    ("cart", "site", "public_url", "status"),
+    [
+        (SHOP_SCRIPT_CHAIN, "https://demo.example", "https://mcp.demo.example/mcp", "ok"),
+        (SHOP_SCRIPT_CHAIN, "https://demo.example", "https://mcp.other.example/mcp", "warn"),
+        (SHOP_SCRIPT_CHAIN, "http://demo.example", "http://mcp.other.example/mcp", "fail"),
+        (INSALES_SINGLE, "https://demo.example", "https://mcp.other.example/mcp", "fail"),
+    ],
+)
+def test_form_post_trampoline_off_the_store_site_is_flagged(cart, site, public_url, status):
+    # Check V1: from another site a store whose cart cookie is not SameSite=None starts a
+    # new cart on every POST, and the trampoline cannot see it. C11 says so from the config.
+    path = next(p for p in STORES if p.parent.name == "demo")
+    data = load(path).model_dump(mode="json")
+    data["site"] = site
+    data["cart"] = {
+        k: v.replace("{site}", site) if k in ("action", "finish_url") else v
+        for k, v in cart.items()
+    }
+    data["server"]["public_url"] = public_url
+    results = {r.id: r for r in check_config(StoreConfig.model_validate(data), path.parent)}
+    c11 = results["C11"]
+    assert (c11.status, "subdomain" in c11.detail) == (status, status != "ok"), c11.detail
+    others = {i: r.detail for i, r in results.items() if r.status in ("fail", "warn")}
+    assert set(others) == ({"C11"} if status != "ok" else set()), others
+    assert f"{status == 'warn':d} warnings" in report(list(results.values()))

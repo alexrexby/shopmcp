@@ -46,7 +46,8 @@ LINES = [
 def preset_cart(engine: Engine, *, alt: bool = False) -> CartConfig:
     preset = PRESETS[engine]
     raw = json.dumps(preset.alt_cart if alt else preset.cart)
-    raw = raw.replace("{host}", HOST).replace("{base}", HOST).replace("{cart_path}", "panier")
+    origin = f"https://{HOST}"
+    raw = raw.replace("{origin}", origin).replace("{base}", origin).replace("{cart_path}", "panier")
     raw = raw.replace(CART_SECRET, SECRET)  # form_post: the ${ENV} reference is load()'s job
     return TypeAdapter(CartConfig).validate_python(json.loads(raw))
 

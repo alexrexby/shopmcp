@@ -6,6 +6,12 @@ and counts in `sessionStorage["mcp:" + jti]`; the store redirects back to the Re
 full URL of this page: `Referrer-Policy: unsafe-url`), and after the last form the page goes
 to `finish_url`. Without JavaScript the same forms are buttons.
 
+A link opened again, in another tab too, must not add its lines twice: the first submit
+marks `localStorage["mcp:done:" + jti]` (one origin, every tab), and a page that finds the
+mark shows "already sent" with a link to the cart and an "add again" button instead. The
+chain's own returns are told apart by the per-tab counter. Without storage (blocked,
+private mode) the page sends as before.
+
 Ids in the token are any printable text (cart/refs.py), so the page is safe only by
 escaping: every attribute and text through `html.escape(quote=True)`, the JSON with `<`,
 `>`, `&` as `\\u003c...` and non-ASCII as `\\uXXXX`, and the script builds the forms with
@@ -35,29 +41,61 @@ STYLE = (
     "body{font:16px/1.5 system-ui,sans-serif;max-width:34em;margin:3em auto;padding:0 1em}"
     "button{font:inherit;padding:.5em 1em;margin:.25em 0}"
 )
-# HTMLFormElement.prototype.submit: a field named `submit` would shadow form.submit.
-SINGLE_SCRIPT = 'HTMLFormElement.prototype.submit.call(document.getElementById("mcp-form"));'
+# HTMLFormElement.prototype.submit: a field named `submit` would shadow form.submit, so the
+# scripts touch no property of a form they fill; the jti is read from the "already" block.
+SINGLE_SCRIPT = """(function () {
+  var done = document.getElementById("mcp-done");
+  var key = "mcp:done:" + done.getAttribute("data-jti");
+  function send() {
+    try { localStorage.setItem(key, "1"); } catch (e) {}
+    HTMLFormElement.prototype.submit.call(document.getElementById("mcp-form"));
+  }
+  var seen = null;
+  try { seen = localStorage.getItem(key); } catch (e) {}
+  if (seen === null) {
+    send();
+    return;
+  }
+  document.getElementById("mcp-run").hidden = true;
+  done.hidden = false;
+  document.getElementById("mcp-again").addEventListener("click", send);
+})();"""
 CHAIN_SCRIPT = """(function () {
   var data = JSON.parse(document.getElementById("mcp-chain").textContent);
   var key = "mcp:" + data.jti;
+  var mark = "mcp:done:" + data.jti;
+  function step(next) {
+    if (next >= data.forms.length) {
+      location.replace(data.finish);
+      return;
+    }
+    if (next === 0) {
+      try { localStorage.setItem(mark, "1"); } catch (e) {}
+    }
+    sessionStorage.setItem(key, String(next + 1));
+    var form = document.createElement("form");
+    form.method = "post";
+    form.action = data.action;
+    data.forms[next].forEach(function (pair) {
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = pair[0];
+      input.value = pair[1];
+      form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    HTMLFormElement.prototype.submit.call(form);
+  }
   var next = Number(sessionStorage.getItem(key) || 0);
-  if (next >= data.forms.length) {
-    location.replace(data.finish);
+  var seen = null;
+  try { seen = localStorage.getItem(mark); } catch (e) {}
+  if (next > 0 || seen === null) {
+    step(next);
     return;
   }
-  sessionStorage.setItem(key, String(next + 1));
-  var form = document.createElement("form");
-  form.method = "post";
-  form.action = data.action;
-  data.forms[next].forEach(function (pair) {
-    var input = document.createElement("input");
-    input.type = "hidden";
-    input.name = pair[0];
-    input.value = pair[1];
-    form.appendChild(input);
-  });
-  document.body.appendChild(form);
-  HTMLFormElement.prototype.submit.call(form);
+  document.getElementById("mcp-run").hidden = true;
+  document.getElementById("mcp-done").hidden = false;
+  document.getElementById("mcp-again").addEventListener("click", function () { step(0); });
 })();"""
 
 _TITLE = define(
@@ -84,6 +122,16 @@ _INVALID = define(
     "trampoline.invalid",
     ru="Ссылка на корзину устарела или повреждена. Попросите ассистента собрать корзину заново.",
     en="The cart link has expired or is damaged. Ask the assistant to build the cart again.",
+)
+_DONE = define(
+    "trampoline.done",
+    ru="Товары по этой ссылке уже отправлены в корзину {brand}, возможно, из другой вкладки.",
+    en="The products of this link were already sent to the {brand} cart, perhaps from another tab.",
+)
+_AGAIN = define(
+    "trampoline.again",
+    ru="Добавить ещё раз",
+    en="Add them again",
 )
 _TO_SITE = define(
     "trampoline.to_site",
@@ -161,11 +209,21 @@ def route(cfg: StoreConfig, texts: Texts) -> Callable[[Request], Awaitable[Respo
 
     title = text("trampoline.title", _TITLE)
 
+    def link(href: str, label: str) -> str:
+        return f'<p><a href="{escape(href, quote=True)}">{escape(label)}</a></p>'
+
+    def done(jti: str, cart_link: str = "") -> str:
+        """The "already sent" block: hidden, a script shows it when the jti is marked."""
+        return (
+            f'<div id="mcp-done" data-jti="{escape(jti, quote=True)}" hidden>'
+            f"<p>{escape(text('trampoline.done', _DONE))}</p>{cart_link}"
+            f'<p><button type="button" id="mcp-again">{escape(text("trampoline.again", _AGAIN))}'
+            "</button></p></div>"
+        )
+
     def invalid() -> Response:
-        link = text("trampoline.to_site", _TO_SITE)
-        body = (
-            f"<p>{escape(text('trampoline.invalid', _INVALID))}</p>"
-            f'<p><a href="{escape(str(cfg.site), quote=True)}">{escape(link)}</a></p>'
+        body = f"<p>{escape(text('trampoline.invalid', _INVALID))}</p>" + link(
+            str(cfg.site), text("trampoline.to_site", _TO_SITE)
         )
         csp = _csp(None, "'none'")
         return HTMLResponse(
@@ -174,11 +232,16 @@ def route(cfg: StoreConfig, texts: Texts) -> Callable[[Request], Awaitable[Respo
             headers=_headers(csp, "no-referrer"),
         )
 
-    def single(fields: Sequence[tuple[str, str]]) -> Response:
+    def single(jti: str, fields: Sequence[tuple[str, str]]) -> Response:
+        if cart.finish_url is not None:
+            cart_link = link(str(cart.finish_url), text("trampoline.go", _GO))
+        else:
+            cart_link = link(str(cfg.site), text("trampoline.to_site", _TO_SITE))
         body = (
-            f'<form id="mcp-form" method="post" action="{escape(action, quote=True)}">'
-            f"{_inputs(fields)}"
-            f'<button type="submit">{escape(text("trampoline.go", _GO))}</button></form>'
+            f'<div id="mcp-run"><form id="mcp-form" method="post" '
+            f'action="{escape(action, quote=True)}">{_inputs(fields)}'
+            f'<button type="submit">{escape(text("trampoline.go", _GO))}</button></form></div>'
+            f"{done(jti, cart_link)}"
         )
         csp = _csp(SINGLE_SCRIPT, form_post.origin(action))
         # No Referer: the store learns nothing about the link, and the token stays here.
@@ -197,8 +260,8 @@ def route(cfg: StoreConfig, texts: Texts) -> Callable[[Request], Awaitable[Respo
         )
         data = {"jti": jti, "action": action, "finish": finish, "forms": forms}
         body = (
-            f"<p>{escape(text('trampoline.chain.hint', _CHAIN_HINT))}</p>{buttons}"
-            f'<p><a href="{escape(finish, quote=True)}">{escape(text("trampoline.go", _GO))}</a></p>'
+            f'<div id="mcp-run"><p>{escape(text("trampoline.chain.hint", _CHAIN_HINT))}</p>'
+            f"{buttons}</div>{done(jti)}{link(finish, text('trampoline.go', _GO))}"
             f'<script type="application/json" id="mcp-chain">{script_json(data)}</script>'
         )
         # 'self': the store answers the POST with a redirect back here, and form-action
@@ -220,7 +283,7 @@ def route(cfg: StoreConfig, texts: Texts) -> Callable[[Request], Awaitable[Respo
         if forms is None:  # the config changed since the link was made
             return invalid()
         if cart.mode == "single":
-            return single(forms[0])
+            return single(payload.jti, forms[0])
         return chain(payload.jti, forms)
 
     return trampoline

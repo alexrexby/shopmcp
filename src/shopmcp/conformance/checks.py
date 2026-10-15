@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from shopmcp import __version__
-from shopmcp.config import StoreConfig
+from shopmcp.config import FormPostCart, StoreConfig
 
 PROTOCOL_VERSION = "2025-06-18"  # handshake revision: the plain JSON-RPC transport path
 LISTEN_VERSION = "2026-07-28"  # revision that added subscriptions/listen
@@ -32,7 +32,7 @@ CORS_HEADERS = ("content-type", "authorization", "mcp-protocol-version")
 MAX_FACETS = 10
 _MARKUP = re.compile(r"&[a-zA-Z]+;|&#\d+;|<[a-zA-Z/]")
 
-Status = Literal["ok", "fail", "skip"]
+Status = Literal["ok", "warn", "fail", "skip"]  # warn: passes, the owner should look
 
 
 class CheckError(Exception):
@@ -58,6 +58,7 @@ class Expect:
     personal: Mapping[str, tuple[str, ...]] | None = None  # full name -> scopes
     auth_enabled: bool | None = None
     allowed_origins: tuple[str, ...] | None = None
+    form_post: FormPostCart | None = None  # the [cart] of a form_post store
 
     @classmethod
     def from_config(cls, cfg: StoreConfig) -> "Expect":
@@ -96,6 +97,7 @@ class Expect:
             personal={f"{cfg.prefix}_{s.suffix}": s.scopes for s in specs if s.scopes},
             auth_enabled=cfg.auth.enabled,
             allowed_origins=tuple(cfg.server.allowed_origins),
+            form_post=cfg.cart if isinstance(cfg.cart, FormPostCart) else None,
         )
 
 
@@ -599,7 +601,9 @@ def check_budget(s: Session) -> Outcome:
 
 def check_cart(s: Session) -> Outcome:
     """C11: a cart of two found products hands off by the store's strategy; an unknown
-    id is an isError result."""
+    id is an isError result. form_post: the trampoline must be on the store's site, or the
+    store's cookie must survive a cross-site POST (`form_post.site_risk`): fail where it
+    cannot, warn where it depends on the store."""
     cart = s.tool("cart_link_create")
     if cart is None:
         return "skip", "no cart tool"
@@ -632,7 +636,16 @@ def check_cart(s: Session) -> Outcome:
     bad = s.call(cart, {"lines": [{"id": MISSING_ID, "quantity": 1}]})
     if not bad.is_error:
         problems.append(f"unknown id {MISSING_ID} is not an error: {bad.text}")
-    return _verdict(problems, f"{kind}")
+    if s.expect.form_post is None or s.expect.public_url is None:
+        return _verdict(problems, f"{kind}")
+    from shopmcp.cart import form_post
+
+    risk, why = form_post.site_risk(s.expect.form_post, s.expect.public_url)
+    if risk == "fail":
+        problems.append(why)
+    if problems or risk == "ok":
+        return _verdict(problems, f"{kind}; {why}")
+    return "warn", f"{kind}; {why}"
 
 
 def check_transport(s: Session) -> Outcome:

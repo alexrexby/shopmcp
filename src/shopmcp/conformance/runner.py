@@ -92,6 +92,8 @@ def report(results: Sequence[CheckResult]) -> str:
     width = max(len(r.title) for r in results)
     lines = [f"{r.id:<4} {r.status:<4} {r.title:<{width}}  {r.detail}" for r in results]
     failed = sum(r.status == "fail" for r in results)
+    warned = sum(r.status == "warn" for r in results)
     skipped = sum(r.status == "skip" for r in results)
-    lines.append(f"{len(results) - failed - skipped} ok, {failed} failed, {skipped} skipped")
+    passed = len(results) - failed - warned - skipped
+    lines.append(f"{passed} ok, {warned} warnings, {failed} failed, {skipped} skipped")
     return "\n".join(lines)

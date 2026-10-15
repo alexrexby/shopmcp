@@ -2,9 +2,10 @@
 
 Data only: detecting the engine lives in `detect.py`, rendering in the CLI. Strings may
 carry scaffold-time placeholders, replaced before the config is written and never seen
-at runtime: `{host}` (store host), `{base}` (host plus the path of `--site`, for an
-engine installed in a subdirectory), `{feed}` (feed URL), `{cart_path}` (PrestaShop's
-localized cart path). `${NAME}` is an environment variable, as anywhere in store.toml.
+at runtime: `{origin}` (scheme, host and port of `--site`: a store on http keeps http),
+`{base}` (the origin plus the path of `--site`, for an engine installed in a
+subdirectory), `{host}` (host and port), `{feed}` (feed URL), `{cart_path}`
+(PrestaShop's localized cart path). `${NAME}` is an environment variable, as anywhere in store.toml.
 Every preset is the default that needs no change on the store side; `cart_upgrade` says
 what a module or a snippet on the store would give instead.
 
@@ -65,23 +66,34 @@ _FORM_POST_WHEN = L10n(
     ru="Трамплин form_post (БЕТА): только после живой проверки V1 на вашем магазине.",
     en="The form_post trampoline (BETA): only after live check V1 on your store.",
 )
+# Check V1 (Chromium, 15.10.2026, a Shop-Script stand): Webasyst on https sets the cart
+# cookie SameSite=None, the chain kept the cart from a subdomain and from another site; on
+# http the cookie is Lax, and from another site the cart kept only the chain's last line.
+_SHOP_SCRIPT_FORM_WHEN = L10n(
+    ru="Трамплин form_post (БЕТА): проверен в Chromium — на https магазина цепочка "
+    "дописывает корзину и с поддомена, и с другого сайта (кука SameSite=None); на http — "
+    "только с поддомена магазина. Safari не проверен.",
+    en="The form_post trampoline (BETA): checked in Chromium. On a store on https the "
+    "chain adds to the cart from a subdomain and from another site (the cookie is "
+    "SameSite=None); on http, only from a subdomain of the store. Safari not checked.",
+)
 _INSALES_FORM: Mapping[str, Any] = {
     "strategy": "form_post",
     "mode": "single",
-    "action": "https://{host}/cart_items",
+    "action": "{origin}/cart_items",
     "fields": [["variant_ids[{id}]", "{qty}"]],
     "secret": CART_SECRET,
 }
 _SHOP_SCRIPT_FORM: Mapping[str, Any] = {
     "strategy": "form_post",
     "mode": "chain",
-    "action": "https://{host}/cart/add/",
+    "action": "{origin}/cart/add/",
     "fields": [
         ["product_id", "{product_id}"],
         ["sku_id", "{variant_id}"],
         ["quantity", "{qty}"],
     ],
-    "finish_url": "https://{host}/cart/",
+    "finish_url": "{origin}/cart/",
     "secret": CART_SECRET,
 }
 
@@ -92,7 +104,7 @@ PRESETS: Mapping[Engine, Preset] = {
         name="Shopify",
         cart={
             "strategy": "url_template",
-            "url_template": "https://{host}/cart/{items}?storefront=true",
+            "url_template": "{origin}/cart/{items}?storefront=true",
             "item_template": "{id}:{qty}",
             "item_separator": ",",
         },
@@ -115,9 +127,9 @@ PRESETS: Mapping[Engine, Preset] = {
         name="WooCommerce",
         cart={
             "strategy": "link_list",
-            "line_template": "https://{base}/cart/?add-to-cart={id}&quantity={qty}",
+            "line_template": "{base}/cart/?add-to-cart={id}&quantity={qty}",
         },
-        adapter={"kind": "woocommerce", "site": "https://{base}"},
+        adapter={"kind": "woocommerce", "site": "{base}"},
         notes=L10n(
             ru="Каталог — Store API без ключей. Ссылки-действия работают на любой версии "
             "WooCommerce; на версии 10+ одна ссылка ведёт сразу в оформление (см. alt_cart).",
@@ -126,7 +138,7 @@ PRESETS: Mapping[Engine, Preset] = {
         ),
         alt_cart={
             "strategy": "url_template",
-            "url_template": "https://{base}/checkout-link/?products={items}",
+            "url_template": "{base}/checkout-link/?products={items}",
             "item_template": "{id}:{qty}",
             "item_separator": ",",
         },
@@ -140,7 +152,7 @@ PRESETS: Mapping[Engine, Preset] = {
         name="Ecwid",
         cart={
             "strategy": "json_fragment",
-            "url_template": "https://{host}/#!/~/cart/create={payload}",
+            "url_template": "{origin}/#!/~/cart/create={payload}",
             "payload_encoding": "uri",
         },
         adapter=_feed("gmc"),
@@ -152,7 +164,7 @@ PRESETS: Mapping[Engine, Preset] = {
         ),
         alt_cart={
             "strategy": "json_fragment",
-            "url_template": "https://{host}/!/~/cart/create={payload}",
+            "url_template": "{origin}/!/~/cart/create={payload}",
             "payload_encoding": "base64",
         },
         alt_cart_when=L10n(ru="Магазин Ecwid на сайте Wix.", en="An Ecwid store on a Wix site."),
@@ -189,17 +201,19 @@ PRESETS: Mapping[Engine, Preset] = {
         notes=L10n(
             ru="Shop-Script кладёт товары в корзину только POST-ом: пока ссылки ведут на "
             "карточки. Трамплин form_post (позиции по одной, магазин возвращает на "
-            "трамплин) — бета до живых проверок V1/V2.",
+            "трамплин) прошёл проверку в Chromium, но остаётся бетой: Safari и настоящий "
+            "HTTPS-магазин не проверены.",
             en="Shop-Script adds to the cart by POST only: for now the links lead to "
             "product pages. The form_post trampoline (one line at a time, the store sends "
-            "it back) is beta until live checks V1/V2.",
+            "it back) passed the check in Chromium but stays beta: Safari and a real store "
+            "on HTTPS are not checked.",
         ),
         cart_upgrade=L10n(
             ru="Плагин Webasyst (receiver): одна ссылка, без трамплина.",
             en="A Webasyst plugin (receiver): one link, no trampoline.",
         ),
         alt_cart=_SHOP_SCRIPT_FORM,
-        alt_cart_when=_FORM_POST_WHEN,
+        alt_cart_when=_SHOP_SCRIPT_FORM_WHEN,
         edit=("adapter.feed", "adapter.cart_ref"),
     ),
     Engine.BITRIX: Preset(
@@ -227,7 +241,7 @@ PRESETS: Mapping[Engine, Preset] = {
         name="PrestaShop",
         cart={
             "strategy": "link_list",
-            "line_template": "https://{host}/{cart_path}?add=1&id_product={product_id}"
+            "line_template": "{origin}/{cart_path}?add=1&id_product={product_id}"
             "&id_product_attribute={variant_id}&qty={qty}",
         },
         adapter=_feed("gmc"),
@@ -287,9 +301,9 @@ PRESETS: Mapping[Engine, Preset] = {
             "/tstore/yml/<hash>.yml from the store settings.",
         ),
         cart_upgrade=L10n(
-            ru="Сниппет в блоке T123: корзина одной ссылкой https://{host}/#mcpcart=… "
+            ru="Сниппет в блоке T123: корзина одной ссылкой {origin}/#mcpcart=… "
             "(url_template, без подписи).",
-            en="A snippet in a T123 block: the cart in one link https://{host}/#mcpcart=… "
+            en="A snippet in a T123 block: the cart in one link {origin}/#mcpcart=… "
             "(url_template, unsigned).",
         ),
         edit=("adapter.feed",),

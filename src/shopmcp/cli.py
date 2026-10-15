@@ -142,7 +142,8 @@ def _line(key: str, value: Any, comment: str | None = None, *, commented: bool =
 
 
 def _fill(value: Any, slots: Mapping[str, str]) -> Any:
-    """Replace the preset's scaffold-time placeholders (`{host}`, `{base}`, `{feed}`, `{cart_path}`)."""
+    """Replace the preset's scaffold-time placeholders (`{origin}`, `{host}`, `{base}`, `{feed}`,
+    `{cart_path}`)."""
     if isinstance(value, str):
         for name, repl in slots.items():
             value = value.replace("{" + name + "}", repl)
@@ -179,11 +180,30 @@ _CART_EDIT = {
     "line_template": "EDIT: cart path / путь корзины",
 }
 _BETA = L10n(
-    en="BETA: form_post is not verified in live browsers yet (check V1); it may replace "
-    "the customer's cart. Prefer hosting this server on a subdomain of the store.",
-    ru="БЕТА: form_post ещё не проверен в живых браузерах (проверка V1); может заменить "
-    "корзину покупателя. Размещайте сервер на поддомене магазина.",
+    en="BETA: form_post is checked in Chromium only (check V1), not in Safari. Host this "
+    "server on the store's site (server.public_url on a subdomain of the store): from "
+    "another site the store keeps the customer's cart only if its cart cookie is "
+    "SameSite=None on https, otherwise every POST starts a new cart; InSales replaces "
+    "the cart from another site always. `shopmcp check` C11 fails or warns.",
+    ru="БЕТА: form_post проверен только в Chromium (проверка V1), в Safari нет. Размещайте "
+    "сервер на сайте магазина (server.public_url на поддомене магазина): с другого сайта "
+    "магазин сохраняет корзину покупателя, только если его кука корзины SameSite=None на "
+    "https, иначе каждый POST заводит новую корзину; InSales с другого сайта заменяет "
+    "корзину всегда. `shopmcp check` C11 даёт провал или предупреждение.",
 )
+_HTTP_STORE = L10n(
+    en="The store is on http: its cookie cannot be SameSite=None, so form_post works only "
+    "from a subdomain of the store.",
+    ru="Магазин на http: его кука не бывает SameSite=None, поэтому form_post работает "
+    "только с поддомена магазина.",
+)
+
+
+def _form_post_notes(site: str) -> list[L10n]:
+    http = urllib.parse.urlsplit(site).scheme.lower() == "http"
+    return [_BETA, _HTTP_STORE] if http else [_BETA]
+
+
 _NO_ADAPTER = L10n(
     en="No catalog adapter for this engine. The cart tool needs a catalog: a Google "
     "Merchant feed (from an app) goes here; Atom feeds are not supported.",
@@ -263,7 +283,7 @@ def _cart_lines(preset: Preset | None, slots: Mapping[str, str], *, headless: bo
         del cart["line_template"]
         lines += _comment(_HEADLESS)
     if cart["strategy"] == "form_post":
-        lines += _comment(_BETA)
+        lines += [c for note in _form_post_notes(slots["origin"]) for c in _comment(note)]
     for key, value in cart.items():
         note = _CART_EDIT.get(key, "EDIT") if f"cart.{key}" in preset.edit else None
         lines.append(_line(key, _fill(value, slots), note))
@@ -274,7 +294,7 @@ def _cart_lines(preset: Preset | None, slots: Mapping[str, str], *, headless: bo
             *_comment(L10n(en=f"Instead, when: {when.en}", ru=f"Вместо, если: {when.ru}")),
         ]
         if preset.alt_cart["strategy"] == "form_post":
-            lines += _comment(_BETA)
+            lines += [c for note in _form_post_notes(slots["origin"]) for c in _comment(note)]
         lines += [_line(k, _fill(v, slots), commented=True) for k, v in preset.alt_cart.items()]
     if up := preset.cart_upgrade:
         up = L10n(en=f"Upgrade: {_fill(up.en, slots)}", ru=f"Апгрейд: {_fill(up.ru, slots)}")
@@ -296,9 +316,14 @@ def _host(site: str) -> str:
     return f"{host}:{parts.port}" if parts.port else host
 
 
+def _origin(site: str) -> str:
+    """Scheme, host and port of `site`: a store on plain http keeps http."""
+    return f"{urllib.parse.urlsplit(site).scheme.lower()}://{_host(site)}"
+
+
 def _base(site: str) -> str:
-    """Host and the path of `site` without the trailing slash: WordPress in `/shop/`."""
-    return _host(site) + urllib.parse.urlsplit(site).path.rstrip("/")
+    """The origin and the path of `site` without the trailing slash: WordPress in `/shop/`."""
+    return _origin(site) + urllib.parse.urlsplit(site).path.rstrip("/")
 
 
 def render_store_toml(
@@ -319,6 +344,7 @@ def render_store_toml(
         prefix = re.sub(r"[^a-z0-9]", "", store_id)[:16]
     preset = PRESETS[engine] if engine else None
     slots = {
+        "origin": _origin(site),
         "host": _host(site),
         "base": _base(site),
         "cart_path": CART_PATH_DEFAULT,
@@ -353,7 +379,9 @@ def render_store_toml(
     return text
 
 
-def _summary(engine: Engine | None, detection: "Detection | None", feed: str | None) -> list[str]:
+def _summary(
+    engine: Engine | None, detection: "Detection | None", feed: str | None, site: str
+) -> list[str]:
     """What scaffold found and what the owner still has to fill in."""
     out = []
     if detection is not None:
@@ -376,7 +404,7 @@ def _summary(engine: Engine | None, detection: "Detection | None", feed: str | N
     else:
         out.append(f"cart: {preset.cart['strategy']}; {preset.notes.en}")
         if "form_post" in (preset.cart["strategy"], (preset.alt_cart or {}).get("strategy")):
-            out.append(f"  {_BETA.en}")
+            out += [f"  {note.en}" for note in _form_post_notes(site)]
         if feed and preset.adapter is not None and "feed" not in preset.adapter:
             out.append(f"  --feed unused: adapter {preset.adapter['kind']!r} reads no feed")
     keys = _edit_keys(preset, feed)
@@ -419,7 +447,7 @@ def _scaffold(args: argparse.Namespace) -> int:
     except FileExistsError:
         print(f"error: {path} already exists, not overwritten", file=sys.stderr)
         return 1
-    print("\n".join(_summary(engine, detection, args.feed)))
+    print("\n".join(_summary(engine, detection, args.feed, args.site)))
     print(f"created {path}; edit the lines marked EDIT")
     return 0
 

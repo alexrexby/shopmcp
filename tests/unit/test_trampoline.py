@@ -46,7 +46,7 @@ LINES = [
 def preset_form(engine: Engine) -> dict[str, Any]:
     cart = PRESETS[engine].alt_cart
     assert cart is not None and cart["strategy"] == "form_post"
-    raw = json.dumps(cart).replace("{host}", HOST)
+    raw = json.dumps(cart).replace("{origin}", f"https://{HOST}")
     return {**json.loads(raw), "secret": SECRET}
 
 
@@ -90,11 +90,14 @@ class Page(HTMLParser):
         self.scripts: list[tuple[dict[str, str | None], str]] = []
         self.styles: list[str] = []
         self.links: list[str | None] = []
+        self.ids: dict[str, dict[str, str | None]] = {}  # id -> attributes
         self._in: str | None = None
         self.feed(html)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = dict(attrs)
+        if a.get("id"):
+            self.ids[str(a["id"])] = a
         if tag == "form":
             self.forms.append({"action": a.get("action"), "method": a.get("method"), "fields": []})
         elif tag == "input":
@@ -358,3 +361,91 @@ async def test_trampoline_is_outside_the_auth():
 def test_form_post_cart_is_what_the_preset_gives():
     assert isinstance(store(INSALES).cart, FormPostCart)
     assert isinstance(store(SHOP_SCRIPT).cart, FormPostCart)
+
+
+# --- the store's site (check V1) ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("https://shop.example/cart/add/", "https://mcp.shop.example/mcp", True),
+        ("https://shop.example:8443/", "https://shop.example/", True),  # a port is not a site
+        ("https://www.shop.com.ru/", "https://mcp.shop.com.ru/", True),
+        ("https://one.com.ru/", "https://two.com.ru/", False),  # a registry's second level
+        ("https://shop.co.uk/", "https://mcp.co.uk/", False),
+        ("http://shop.lvh.me:18080/", "http://mcp.lvh.me:18100/", True),  # V1 A1-A3
+        ("http://shop.lvh.me:18080/", "http://mcp.127.0.0.1.nip.io:18100/", False),  # A4-A6
+        ("http://shop.stand.localhost/", "http://mcp.other.localhost/", False),  # V1 Bк
+        ("https://shop.example/", "http://mcp.shop.example/", False),  # schemeful
+        ("http://127.0.0.1:8080/", "http://127.0.0.1:8000/", True),
+        ("http://10.0.0.1/", "http://10.0.0.2/", False),  # an address is its own site
+    ],
+)
+def test_site_is_the_registrable_domain_with_the_scheme(a, b, same):
+    assert (form_post.site(a) == form_post.site(b)) == same
+
+
+def _form(cart: dict[str, Any], scheme: str) -> FormPostCart:
+    raw = json.loads(json.dumps(cart).replace(f"https://{HOST}", f"{scheme}://{HOST}"))
+    return FormPostCart.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("cart", "scheme", "public_url", "risk"),
+    [
+        (SHOP_SCRIPT, "https", f"https://mcp.{HOST}/mcp", "ok"),
+        (INSALES, "https", f"https://mcp.{HOST}/mcp", "ok"),
+        (SHOP_SCRIPT, "http", f"http://mcp.{HOST}/mcp", "ok"),  # V1 A1-A3
+        (SHOP_SCRIPT, "https", "https://mcp.other.example/mcp", "warn"),  # V1 B4-B6
+        (SHOP_SCRIPT, "http", "http://mcp.other.example/mcp", "fail"),  # V1 A4-A6
+        (INSALES, "https", "https://mcp.other.example/mcp", "fail"),  # replaces the cart
+        (INSALES, "http", "http://mcp.other.example/mcp", "fail"),
+    ],
+)
+def test_site_risk_of_a_cross_site_trampoline(cart, scheme, public_url, risk):
+    got, why = form_post.site_risk(_form(cart, scheme), public_url)
+    assert got == risk, why
+    assert ("subdomain" in why) == (risk != "ok")
+
+
+# --- a link opened again (check V1: a new tab added the lines twice) ----------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("cart", "script"), [(INSALES, SINGLE_SCRIPT), (SHOP_SCRIPT, CHAIN_SCRIPT)]
+)
+async def test_the_already_sent_block_is_hidden_and_keyed_by_the_jti(cart, script):
+    res = await page(store(cart))
+    p = Page(res.text)
+    done = p.ids["mcp-done"]
+    # Without JavaScript the page is the forms, as before: the block stays hidden.
+    assert "hidden" in done and "hidden" not in p.ids["mcp-run"] and p.forms
+    assert "mcp-again" in p.ids and p.ids["mcp-again"].get("type") == "button"
+    jti = done["data-jti"]
+    assert jti and re.fullmatch(r"[A-Za-z0-9_-]{22}", jti)
+    if cart is SHOP_SCRIPT:
+        assert chain_data(p)["jti"] == jti
+    [code] = [text for attrs, text in p.scripts if "type" not in attrs]
+    assert code == script and csp(res)["script-src"] == sha256(script)
+    assert "уже отправлены" in res.text and "Добавить ещё раз" in res.text
+
+
+@pytest.mark.parametrize("script", [SINGLE_SCRIPT, CHAIN_SCRIPT])
+def test_the_scripts_mark_the_jti_for_every_tab(script):
+    # sessionStorage is one tab: the mark that stops a second run lives in localStorage,
+    # set before the first POST and read only when this tab has not started the chain.
+    assert '"mcp:done:" +' in script and "localStorage.setItem(" in script
+    assert script.count("try {") == 2  # storage may be blocked: the page still sends
+    assert 'getElementById("mcp-again").addEventListener("click"' in script
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+        assert sink not in script
+
+
+@pytest.mark.anyio
+async def test_single_offers_the_cart_or_the_site_when_already_sent():
+    p = Page((await page(store(INSALES))).text)
+    assert p.links == [str(store(INSALES).site)]  # no finish_url: the store's site
+    finish = {**INSALES, "finish_url": f"https://{HOST}/cart_items"}
+    assert Page((await page(store(finish))).text).links == [f"https://{HOST}/cart_items"]

@@ -16,6 +16,8 @@ import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
+from ipaddress import ip_address
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import HttpUrl
@@ -40,6 +42,8 @@ KEY_ID = "1"  # FormPostCart has no key_id: one secret per store, rotation is a 
 # What a token line knows; `{url}`, `{items}` and the rest have nothing to fill in a form.
 FIELD_PLACEHOLDERS = frozenset({"id", "product_id", "variant_id", "qty"})
 _NAME_BREAKERS = ("[", "]")
+# Second-level labels under which a country registry sells names: shop.com.ru, shop.co.uk.
+_REGISTRY = frozenset({"ac", "co", "com", "edu", "gov", "msk", "net", "org", "pp", "spb"})
 
 _UNSAFE_ID = define(
     "cart.note.form_unsafe_id",
@@ -49,6 +53,7 @@ _UNSAFE_ID = define(
 )
 
 Form = list[tuple[str, str]]
+Risk = Literal["ok", "warn", "fail"]
 
 
 def form(fields: Sequence[tuple[str, str]], ref: CartRef, quantity: Decimal) -> Form | None:
@@ -83,6 +88,56 @@ def forms(cfg: FormPostCart, lines: Sequence[tuple[CartRef, Decimal]]) -> list[F
 def origin(url: HttpUrl | str) -> str:
     parts = urlsplit(str(url))
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def site(url: HttpUrl | str) -> str:
+    """The browser's "site" of `url`: scheme and registrable domain, no port.
+
+    A simplified Public Suffix List: the last two labels, three under a country registry's
+    second level (shop.com.ru, shop.co.uk). No list ships with the package and none is
+    fetched, so two hosts on one hosting platform of the PSL (a.github.io, b.github.io)
+    count as one site here while a browser sees two. A change of scheme is another site
+    (schemeful same-site), the cautious reading.
+    """
+    parts = urlsplit(str(url))
+    host = (parts.hostname or "").lower().rstrip(".")
+    try:
+        ip_address(host)
+    except ValueError:
+        labels = host.split(".")
+        keep = 3 if len(labels) > 2 and len(labels[-1]) == 2 and labels[-2] in _REGISTRY else 2
+        host = ".".join(labels[-keep:])
+    return f"{parts.scheme.lower()}://{host}"
+
+
+def site_risk(cfg: FormPostCart, public_url: HttpUrl | str) -> tuple[Risk, str]:
+    """Whether the store keeps the customer's cart when our trampoline POSTs to it.
+
+    Check V1 (Chromium, 15.10.2026): the POST carries the store's cart cookie when the
+    trampoline is on the store's own site, or when the cookie is `SameSite=None`. Otherwise
+    every POST starts a new cart: `single` replaces the customer's cart, `chain` leaves only
+    its last line, and the page still reaches finish_url. A store on http cannot have a
+    `SameSite=None` cookie (it needs `Secure`); InSales (the `single` preset) replaces the
+    cart from another site; Shop-Script on https sets `SameSite=None` (Safari not checked).
+    """
+    store, ours = site(cfg.action), site(public_url)
+    if store == ours:
+        return "ok", f"trampoline on the store's site {store}"
+    where = f"trampoline on {ours}, store on {store}"
+    if urlsplit(str(cfg.action)).scheme != "https":
+        return "fail", (
+            f"{where}: a store on http has no SameSite=None cookie, every POST from another "
+            "site starts a new cart; host the server on a subdomain of the store"
+        )
+    if cfg.mode == "single":
+        return "fail", (
+            f"{where}: in single mode the store (InSales) replaces the customer's cart; "
+            "host the server on a subdomain of the store"
+        )
+    return "warn", (
+        f"{where}: the cart survives only if the store's cookie is SameSite=None (Shop-Script "
+        "on https: yes in Chromium, Safari not checked); a subdomain of the store is safe"
+    )
 
 
 class FormPostStrategy:
