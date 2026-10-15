@@ -273,6 +273,8 @@ def _cart_lines(preset: Preset | None, slots: Mapping[str, str], *, headless: bo
             "",
             *_comment(L10n(en=f"Instead, when: {when.en}", ru=f"Вместо, если: {when.ru}")),
         ]
+        if preset.alt_cart["strategy"] == "form_post":
+            lines += _comment(_BETA)
         lines += [_line(k, _fill(v, slots), commented=True) for k, v in preset.alt_cart.items()]
     if up := preset.cart_upgrade:
         up = L10n(en=f"Upgrade: {_fill(up.en, slots)}", ru=f"Апгрейд: {_fill(up.ru, slots)}")
@@ -373,7 +375,7 @@ def _summary(engine: Engine | None, detection: "Detection | None", feed: str | N
         out.append("config: YML feed + product page links; rerun with --engine for a preset")
     else:
         out.append(f"cart: {preset.cart['strategy']}; {preset.notes.en}")
-        if preset.cart["strategy"] == "form_post":
+        if "form_post" in (preset.cart["strategy"], (preset.alt_cart or {}).get("strategy")):
             out.append(f"  {_BETA.en}")
         if feed and preset.adapter is not None and "feed" not in preset.adapter:
             out.append(f"  --feed unused: adapter {preset.adapter['kind']!r} reads no feed")

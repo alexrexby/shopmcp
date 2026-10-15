@@ -33,7 +33,8 @@ positional arguments:
                         exit
     check               run the conformance checks (store.toml: served
                         locally; --url: live)
-    scaffold            create stores/<store_id>/store.toml
+    scaffold            create stores/<store_id>/store.toml; the engine is
+                        detected from the site (GET only)
 
 options:
   -h, --help            show this help message and exit
@@ -181,6 +182,14 @@ docker compose down -v
    ```text
    created stores/my-shop/store.toml; edit the lines marked EDIT
    ```
+
+   Для магазина на известном движке укажите сайт, и scaffold сам выберет движок и подходящие `[adapter]` и `[cart]`; `--feed` тогда необязателен (в файле строка получит пометку `EDIT`):
+
+   ```bash
+   uv run shopmcp scaffold my-shop --site https://shop.example [--engine shopify] [--feed feed.xml]
+   ```
+
+   Без `--engine` scaffold определяет движок несколькими GET-запросами и печатает найденные признаки; «not determined» значит: задайте `--engine` вручную. Движки, пресеты и что заполнить: [engines.md](engines.md).
 
    `--prefix` задаёт префикс имён инструментов; по умолчанию это id магазина без дефисов (здесь `myshop`). Повторный запуск с тем же id файл не перезапишет:
 

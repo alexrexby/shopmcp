@@ -59,6 +59,33 @@ def _feed(fmt: str) -> dict[str, Any]:
     return {"kind": "feed", "format": fmt, "feed": "{feed}", "refresh_minutes": 60}
 
 
+# form_post is beta until the trampoline is verified in live browsers (checks V1/V2):
+# scaffold writes it commented out, the working default is product page links.
+_FORM_POST_WHEN = L10n(
+    ru="Трамплин form_post (БЕТА): только после живой проверки V1 на вашем магазине.",
+    en="The form_post trampoline (BETA): only after live check V1 on your store.",
+)
+_INSALES_FORM: Mapping[str, Any] = {
+    "strategy": "form_post",
+    "mode": "single",
+    "action": "https://{host}/cart_items",
+    "fields": [["variant_ids[{id}]", "{qty}"]],
+    "secret": CART_SECRET,
+}
+_SHOP_SCRIPT_FORM: Mapping[str, Any] = {
+    "strategy": "form_post",
+    "mode": "chain",
+    "action": "https://{host}/cart/add/",
+    "fields": [
+        ["product_id", "{product_id}"],
+        ["sku_id", "{variant_id}"],
+        ["quantity", "{qty}"],
+    ],
+    "finish_url": "https://{host}/cart/",
+    "secret": CART_SECRET,
+}
+
+
 PRESETS: Mapping[Engine, Preset] = {
     Engine.SHOPIFY: Preset(
         engine=Engine.SHOPIFY,
@@ -134,57 +161,46 @@ PRESETS: Mapping[Engine, Preset] = {
     Engine.INSALES: Preset(
         engine=Engine.INSALES,
         name="InSales",
-        cart={
-            "strategy": "form_post",
-            "mode": "single",
-            "action": "https://{host}/cart_items",
-            "fields": [["variant_ids[{id}]", "{qty}"]],
-            "secret": CART_SECRET,
-        },
+        cart={"strategy": "link_list"},
         adapter=_feed("yml"),
         notes=L10n(
-            ru="Корзину кладёт страница-трамплин одним POST. С другого сайта InSales "
-            "заменяет корзину покупателя: размещайте сервер на поддомене магазина. "
-            "Бета до живой проверки V1.",
-            en="A trampoline page fills the cart with one POST. From another site InSales "
-            "replaces the customer's cart: host the server on a subdomain of the store. "
-            "Beta until live check V1.",
+            ru="InSales кладёт товары в корзину только POST-ом: пока ссылки ведут на "
+            "карточки. Трамплин form_post — бета: с другого сайта InSales заменяет "
+            "корзину покупателя, размещайте сервер на поддомене магазина.",
+            en="InSales adds to the cart by POST only: for now the links lead to product "
+            "pages. The form_post trampoline is beta: from another site InSales replaces "
+            "the customer's cart, host the server on a subdomain of the store.",
         ),
         cart_upgrade=L10n(
             ru="Сниппет в теме магазина: корзина по ссылке без трамплина и без замены.",
             en="A snippet in the store theme: a cart link without the trampoline or the "
             "replacement.",
         ),
+        alt_cart=_INSALES_FORM,
+        alt_cart_when=_FORM_POST_WHEN,
         replaces_cart=True,
-        edit=("adapter.feed", "cart.secret"),
+        edit=("adapter.feed",),
     ),
     Engine.SHOP_SCRIPT: Preset(
         engine=Engine.SHOP_SCRIPT,
         name="Shop-Script",
-        cart={
-            "strategy": "form_post",
-            "mode": "chain",
-            "action": "https://{host}/cart/add/",
-            "fields": [
-                ["product_id", "{product_id}"],
-                ["sku_id", "{variant_id}"],
-                ["quantity", "{qty}"],
-            ],
-            "finish_url": "https://{host}/cart/",
-            "secret": CART_SECRET,
-        },
+        cart={"strategy": "link_list"},
         adapter=_feed("yml"),
         notes=L10n(
-            ru="Страница-трамплин отправляет позиции по одной, магазин возвращает на неё; "
-            "в конце — корзина. Бета до живой проверки V1/V2.",
-            en="A trampoline page posts the lines one by one, the store sends it back; "
-            "the cart page comes last. Beta until live checks V1/V2.",
+            ru="Shop-Script кладёт товары в корзину только POST-ом: пока ссылки ведут на "
+            "карточки. Трамплин form_post (позиции по одной, магазин возвращает на "
+            "трамплин) — бета до живых проверок V1/V2.",
+            en="Shop-Script adds to the cart by POST only: for now the links lead to "
+            "product pages. The form_post trampoline (one line at a time, the store sends "
+            "it back) is beta until live checks V1/V2.",
         ),
         cart_upgrade=L10n(
             ru="Плагин Webasyst (receiver): одна ссылка, без трамплина.",
             en="A Webasyst plugin (receiver): one link, no trampoline.",
         ),
-        edit=("adapter.feed", "adapter.cart_ref", "cart.secret"),
+        alt_cart=_SHOP_SCRIPT_FORM,
+        alt_cart_when=_FORM_POST_WHEN,
+        edit=("adapter.feed", "adapter.cart_ref"),
     ),
     Engine.BITRIX: Preset(
         engine=Engine.BITRIX,

@@ -39,35 +39,105 @@ The server `instructions` are assembled from: an intro (`instructions.intro`), y
 
 ## adapter
 
-`kind` selects the adapter; every other key in the table belongs to that adapter and is validated by it. Registered kinds: `yml`, `bitrix`, `insales`, `http_json` (the last three are stubs, see [adapters.md](adapters.md)). An unknown kind fails with the list of known ones.
+`kind` selects the adapter; every other key in the table belongs to that adapter and is validated by it. Registered kinds: `yml` and `feed` (one adapter, see below), `woocommerce`, `bitrix`, `insales`, `http_json` (the last three are stubs, see [adapters.md](adapters.md)). An unknown kind fails with the list of known ones.
 
-`yml` keys:
+`yml` and `feed` keys (`feed` is the same adapter under the name scaffold writes for engine presets):
 
 | Key | Purpose | Default |
 |---|---|---|
 | `feed` | `https://` URL or a path; a relative path starts at the directory of `store.toml`, not the current directory | required |
+| `format` | `auto`, `yml` or `gmc`. `auto` tells the formats apart by the root element: `yml_catalog` is YML, `rss` and Atom `feed` are Google Merchant. An explicit value that disagrees with the root fails the read | `auto` |
 | `refresh_minutes` | How often the index is rebuilt in the background; `0` disables the refresh | `60` |
 | `max_feed_mb` | Feed size limit in megabytes; a larger feed is refused | `200` |
-| `stale_minutes` | An index older than this is stale: `/healthz` answers `503`. Must be above `refresh_minutes`; ignored when `refresh_minutes = 0` | `3 × refresh_minutes` |
+| `stale_minutes` | An index older than this is stale: `/healthz` answers `503`. Must be above `refresh_minutes`; ignored when `refresh_minutes = 0` | `3 x refresh_minutes` |
+| `cart_ref` | Table `[adapter.cart_ref]`, see below | not set |
 
-Any other key under `[adapter]` with `kind = "yml"` is an error.
+Any other key under `[adapter]` with these kinds is an error.
+
+`woocommerce` keys:
+
+| Key | Purpose | Default |
+|---|---|---|
+| `site` | `https://` URL of the WordPress site, without query: `https://shop.example` or `https://shop.example/shop` | required |
+| `refresh_minutes`, `stale_minutes` | As for `yml` | `60`, `3 x refresh_minutes` |
+| `max_pages` | Most pages (100 products each) read from one listing; a bigger shop is refused with this key named | `200` |
+| `max_minutes` | Time budget of one whole read, in minutes | `30` |
+| `max_feed_mb` | Size limit of the bytes of the whole read, every page counted | `200` |
+
+The `woocommerce` adapter has no `cart_ref` and no `feed`. How it reads the shop: [adapters.md](adapters.md#the-woocommerce-adapter).
+
+### adapter.cart_ref
+
+The cart link needs the key the store's cart knows, which is not always the feed `id`. `[adapter.cart_ref]` says how to get it from a feed id. Without the table the default applies: an offer with a group (`group_id` in YML, `g:item_group_id` in GMC) is a variant of that group (`{product_id}` is the group, `{variant_id}` and `{id}` are the offer id); an offer without a group is a product (`{id}` is its id).
+
+| Key | Purpose |
+|---|---|
+| `pattern` | A regular expression matched against the whole feed id (full match) with the named group `product_id` and, optionally, `variant_id`; no other named groups. An id it does not match falls back to the default |
+| `options` | Table `store option name = "feed param name"`: the value of the offer's `param` (YML) or attribute (GMC: `color`, `size`, `material`, `pattern`, `gender`, `age_group`) goes to the cart as that option. Up to 20 entries |
+
+```toml
+[adapter.cart_ref]
+pattern = "^(?P<product_id>[0-9]+)-(?P<variant_id>[0-9]+)$"   # feed id "12-34"
+options = { Size = "size" }
+```
+
+An unknown key, a pattern that does not compile, or wrong group names fail the start with the path of the key.
 
 ## cart
 
-How the cart is handed to the store site. The tool is `<prefix>_cart_link_create`; it checks every id against the catalog first, so an unknown id is an error that lists the missing ids.
+How the cart is handed to the store site. The tool is `<prefix>_cart_link_create`; it checks every id against the catalog first, so an unknown id is an error that lists the missing ids. `scaffold --engine` writes a ready `[cart]` for each engine, see [engines.md](engines.md).
 
-| Field | Purpose | Default |
+`strategy` selects the strategy and decides which other keys exist; a key of another strategy is an error. Without `[cart]`, or without `strategy`, it is `link_list`.
+
+| Strategy | Who fills the cart | Keys |
 |---|---|---|
-| `strategy` | `link_list`, `url_template` or `share_link` | `link_list` |
-| `url_template` | URL with the `{items}` placeholder. Required for `url_template` | not set |
-| `item_template` | One cart line with `{id}` and `{qty}`. Required for `url_template` (must contain `{id}`) | not set |
-| `item_separator` | String between lines | `&` |
+| `link_list` | the customer, from product page links | `line_template` |
+| `url_template` | the store, from one GET link | `url_template`, `item_template`, `item_separator` |
+| `json_fragment` | the store script, from the URL fragment (Ecwid) | `url_template`, `payload_encoding` |
+| `form_post` | our trampoline page, by POST to the store (beta) | `action`, `mode`, `fields`, `finish_url`, `secret`, `ttl_minutes` |
+| `receiver` | our module on the store site, from a signed link | `url_template`, `secret`, `key_id`, `ttl_minutes` |
+| `share_link` | the store API, a shared cart | none |
+
+| Key | Strategy | Purpose | Default |
+|---|---|---|---|
+| `line_template` | `link_list` | One add-to-cart link per line (returned as `add_url`); must contain `{id}` or `{product_id}`. Without it only product page links are returned | not set |
+| `url_template` | `url_template`, `json_fragment`, `receiver` | The cart URL; must contain `{items}`, `{payload}` or `{token}` respectively | required |
+| `item_template` | `url_template` | One cart line; must contain `{id}` or `{product_id}` | required |
+| `item_separator` | `url_template` | String between lines | `&` |
+| `payload_encoding` | `json_fragment` | `uri` (percent-encoded JSON) or `base64` (Ecwid on Wix) | `uri` |
+| `action` | `form_post` | URL the form is posted to | required |
+| `mode` | `form_post` | `single`: one form with all lines; `chain`: one form per line, the store sends the browser back | required |
+| `fields` | `form_post` | List of `[name, value]` pairs, 1-10, both are templates; a field that renders empty is not sent. At least one must contain `{id}` or `{product_id}` | required |
+| `finish_url` | `form_post` | Where a chain ends: the cart page. Required for `chain` | not set |
+| `secret` | `form_post`, `receiver` | Signing key: exactly one `${ENV}` reference (a literal in the file is refused), at least 32 bytes after substitution | required |
+| `ttl_minutes` | `form_post`, `receiver` | Lifetime of a signed link, 5-10080 | `1440` |
+| `key_id` | `receiver` | Key id in the token (`kid`), for rotation: `^[A-Za-z0-9._-]{1,32}$` | `1` |
+
+Placeholders of the templates. They are replaced in one pass (a substituted value is never read as a placeholder again), and every value is percent-encoded whole, so it is safe in a path, a query or a fragment:
+
+| Placeholder | Value |
+|---|---|
+| `{id}` | the most specific cart id: the variant id if there is a variant, else the product id |
+| `{product_id}` | the product id of the cart key |
+| `{variant_id}` | the variant id; empty without a variant |
+| `{qty}` | quantity |
+| `{url}` | product page URL; not encoded where it starts the template (`{url}?action=...`), encoded in a query value |
+| `{items}` | `url_template`: the lines, each filled from `item_template`, joined by `item_separator` |
+| `{payload}` | `json_fragment`: the cart as JSON in the chosen encoding |
+| `{token}` | `receiver`: the signed token |
+
+In a `line_template` a query parameter whose placeholder rendered empty is left out (`id_product_attribute=` of a product with no combinations). In an `item_template` it stays, because parallel arrays (`product[]`, `variant[]`) pair lines by position.
 
 Strategies:
 
-- `link_list` works for any store: links to product pages with quantities.
-- `url_template` builds one URL, e.g. `https://shop.example/cart/add?id[]=1&qty[]=2&id[]=5&qty[]=1`. Ids are URL-quoted. If the URL would exceed 2000 characters, the answer degrades to `link_list` and carries a note.
+- `link_list` works for any store: links to product pages with quantities. With `line_template`, e.g. `https://shop.example/cart/?add-to-cart={id}&quantity={qty}`, every line also carries a link that adds that line.
+- `url_template` builds one URL, e.g. `https://shop.example/cart/add?id[]=1&qty[]=2&id[]=5&qty[]=1`. If the URL would exceed 2000 characters, the answer degrades to `link_list` and carries a note.
+- `json_fragment`: a `url_template` such as `https://shop.example/#!/~/cart/create={payload}`; the cart is `{"products":[{"id":…,"quantity":…,"options":{…}}]}`. The same 2000-character degradation.
+- `form_post` is **beta**: the keys are validated, but the trampoline page is not in the code yet and a store with this strategy does not start. See [engines.md](engines.md#form_post-beta).
+- `receiver` builds a link to a module on the store site; the token format and the module contract are in [cart-receiver.md](cart-receiver.md). The same 2000-character degradation; the answer carries `expires_at`.
 - `share_link` asks the adapter to create a shared cart on the store side. The adapter must declare the `share_link` capability, otherwise the start fails. The tool is then marked as non-read-only (it creates an object at the store).
+
+Every URL of the section (`url_template`, `line_template`, `action`, `finish_url`) must point at the host of `site` or its subdomain, otherwise the start fails: a cart link to another host would make the store an open redirect. A `line_template` that starts with `{url}` is exempt, it begins at the product page the feed owns.
 
 ## limits
 

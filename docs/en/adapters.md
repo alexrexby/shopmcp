@@ -4,18 +4,20 @@
 
 An adapter is the only store-specific code. It reads the store's data source and maps it to the framework's domain model (`src/shopmcp/domain/models.py`). The core, the tools, the cart hand-off and the server never see raw source data.
 
-Contents: [Status](#status) · [Capabilities](#capabilities) · [The contract](#the-contract) · [Writing an adapter](#writing-an-adapter) · [Registering it](#registering-it) · [The yml adapter](#the-yml-adapter)
+Contents: [Status](#status) · [Capabilities](#capabilities) · [The contract](#the-contract) · [Writing an adapter](#writing-an-adapter) · [Registering it](#registering-it) · [The yml adapter](#the-yml-adapter) · [Google Merchant feed](#google-merchant-feed) · [The woocommerce adapter](#the-woocommerce-adapter)
 
 ## Status
 
 | `adapter.kind` | State |
 |---|---|
-| `yml` | Ready. YML (Yandex Market Language) feed from a file or an `https://` URL |
+| `yml` | Ready. YML (Yandex Market Language) or Google Merchant feed from a file or an `https://` URL |
+| `feed` | Ready. The same adapter as `yml`; scaffold writes this name for engine presets |
+| `woocommerce` | Ready. Snapshot of the keyless WooCommerce Store API |
 | `bitrix` | Stub: declares no capabilities |
 | `insales` | Stub: declares no capabilities |
 | `http_json` | Stub: declares no capabilities |
 
-A store on a stub starts, but exposes only `<prefix>_store_info`: every other tool needs a capability (`cart_link_create` needs `details`). The module docstrings of the stubs describe the intended source and the `[adapter]` keys. Roadmap: 10 engines — in progress.
+A store on a stub starts, but exposes only `<prefix>_store_info`: every other tool needs a capability (`cart_link_create` needs `details`). The module docstrings of the stubs describe the intended source and the `[adapter]` keys. Presets for ten engines: [engines.md](engines.md).
 
 ## Capabilities
 
@@ -152,6 +154,39 @@ The feed is the source of truth, a SQLite index is its cache.
 - The index file is `$SHOPMCP_DATA_DIR/<store id>.sqlite`. If the directory is not writable, the index goes to a temporary directory and `/healthz` carries a `warning`.
 - Capabilities: `search`, `details`, `barcode`, `analogs`, `categories`, `promotions`. Not provided: `pickup_points`, `share_link`, `orders`.
 - Search normalizes the query and the index with Russian and English snowball stemmers, so inflected forms match (the Russian `молока` finds `молоко`).
-- Keys: `feed`, `refresh_minutes`, `max_feed_mb`, `stale_minutes` ([configuration.md](configuration.md#adapter)).
+- Keys: `feed`, `format`, `refresh_minutes`, `max_feed_mb`, `stale_minutes`, `cart_ref` ([configuration.md](configuration.md#adapter)). Google Merchant feeds: [below](#google-merchant-feed).
 
 Feed format: a standard `yml_catalog` with `shop/categories` and `shop/offers`; the demo feed [`stores/demo/feed.xml`](../../stores/demo/feed.xml) shows the supported elements (`url`, `price`, `oldprice`, `currencyId`, `categoryId`, `picture`, `name` or `typePrefix`+`vendor`+`model`, `vendor`, `barcode`, `description`, `param`, the `available` attribute).
+
+## Google Merchant feed
+
+The `yml` adapter (kind `yml` or `feed`) also reads a Google Merchant feed. `adapter.format = "auto"` (the default) picks the reader by the root element: `rss` or an Atom `feed` is Merchant, `yml_catalog` is YML. The index, search, refresh and `/healthz` are the same; only the reader differs.
+
+What is read (`src/shopmcp/adapters/yml/gmc.py`):
+
+- **Items**: RSS `item` or Atom `entry`; the `g:` namespace (`http://base.google.com/ns/1.0`) must be declared before the first item. An Atom feed with no `g:` (a Shopify `s:` feed) is not a Merchant feed and is refused as a whole.
+- **Required per item**: `g:id`, a link (`g:link` or the plain `link`), a title and `g:price`. An item without any of them is skipped and counted in `skipped`.
+- **Price** is `1299.00 RUB` (the currency may come first). Digit groups and a decimal comma are read (`1 299,00`, `1.299,00`, `1,299.00`); a lone comma before exactly three digits (`1,299`) is ambiguous, so the item is skipped rather than guessed. `RUR` is read as `RUB`.
+- **Sale**: `g:sale_price` below `g:price` in the same currency makes the price the current one and `g:price` the old one, with `discount_percent`. If `g:sale_price_effective_date` (`start/end`, ISO 8601, either side may be empty) is set, the sale counts only inside it; a date that cannot be read means no sale. The period is checked at the index build time, not at request time: a sale starts and ends with a delay of up to one refresh.
+- **Variants**: `g:item_group_id` becomes the group of the product; with the default `cart_ref` the item is a variant of that group ([configuration.md](configuration.md#adaptercart_ref)).
+- **Availability**: `in_stock` is available; `out_of_stock`, `preorder` and `backorder` are not. Anything else leaves it unknown.
+- **Categories**: Merchant has no category tree, so `g:product_type` (`A > B > C`) becomes categories with synthetic ids, one parent per path prefix.
+- **Other fields**: `g:brand` is the vendor, `g:gtin` the barcode (8-14 digits), `g:image_link` and `g:additional_image_link` the pictures, `g:color`, `g:size`, `g:material`, `g:pattern`, `g:gender`, `g:age_group` the params.
+
+Limits: a category path is cut at 10 levels, `g:product_type` at 750 characters, an item with over 10 000 nodes is skipped, a feed with an internal DTD is refused, the size is capped by `max_feed_mb`. The feed is read as a stream like YML.
+
+The demo feed [`stores/demo/feed-gmc.xml`](../../stores/demo/feed-gmc.xml) shows the supported elements.
+
+## The woocommerce adapter
+
+`kind = "woocommerce"`, `site = "https://shop.example"`. The catalog is read from the public Store API (`/wp-json/wc/store/v1`): GET only, no key, no cookie. Capabilities: `search`, `details`, `analogs`, `categories`, `promotions`. Not provided: `barcode` (the Store API does not publish GTINs), `pickup_points`, `share_link`, `orders`.
+
+- **A snapshot, not live requests.** The adapter reads the whole catalog page by page into the same SQLite index as a feed and rebuilds it every `adapter.refresh_minutes`, so search, filters and sorting behave as on a feed. The first build in `start()`, the previous index kept when a refresh fails, `/healthz` `503` when stale: as for `yml`.
+- **Polite crawl.** 100 products per page, one request per second, a response page is capped at 4 MB. A request that fails with `429`, `502`, `503` or `504` is retried twice with a growing pause (honouring `Retry-After` up to 60 s; a longer wait fails the read). The limits of one read: `max_pages` per listing, `max_minutes` for the whole read and `max_feed_mb` for all bytes. A shop that does not fit is refused with the key to raise.
+- **Prices are minor units**: the Store API sends `"1899"` with `currency_minor_unit: 2`, the adapter reads it as 18.99; `"115"` with `0` is 115. A regular price above the sale price gives the old price and the discount.
+- **Variations.** A variable product is not one purchasable unit, its variations are. Each variation becomes a product named after the parent, in the parent's categories, with the parent as its group; its own link and price are used. `{id}` in a cart template is the variation id, the one `?add-to-cart=` and `/checkout-link/` take.
+- **Skipped**: `grouped` products (a set of links), `external` products (sold elsewhere), a `variable` product left without variations, and a variation that leaves an attribute at "Any" (its cart link by id alone likely adds nothing; not checked live). Each skip is counted in `skipped`.
+- **An incomplete crawl never replaces the index.** If a listing ends before its own `X-WP-TotalPages` / `X-WP-Total` say (a few items, or 1%, are allowed for deletions during the read), if the product listing is empty, or if a limit is hit, the read fails: the catalog is a snapshot, and a short answer from a cache, a firewall or a visibility plugin would otherwise replace all of it. The previous index is served and the reason shows as `last_error` in `/healthz`. Only a first start with no index is fatal.
+- **Local check.** The first read of a big shop takes minutes: `shopmcp check --online --start-timeout …` ([conformance.md](conformance.md#modes)).
+
+Keys: `site`, `refresh_minutes`, `stale_minutes`, `max_pages`, `max_minutes`, `max_feed_mb` ([configuration.md](configuration.md#adapter)).

@@ -125,7 +125,7 @@ def test_scaffold_engine_preset_loads(workdir, engine, monkeypatch, offline_prob
     assert not any(f"{{{slot}}}" in text for slot in ("host", "base", "cart_path", "feed"))
     assert preset.notes.en.split()[0] in text and preset.notes.ru.split()[0] in text
     out = capsys.readouterr().out
-    beta = preset.cart["strategy"] == "form_post"
+    beta = "form_post" in (preset.cart["strategy"], (preset.alt_cart or {}).get("strategy"))
     assert ("BETA" in text and "БЕТА" in text and "BETA" in out) == beta
     if preset.adapter is None or "feed" in preset.adapter:
         assert cfg.adapter.model_extra["feed"] == FEED and "adapter.feed" not in out
@@ -136,9 +136,10 @@ def test_scaffold_without_feed_marks_it(workdir, monkeypatch, capsys):
     assert cli.main(["scaffold", "my-shop", "--site", SITE, "--engine", "insales"]) == 0
     cfg = load(workdir / "stores/my-shop/store.toml")
     assert cfg.adapter.model_extra["feed"] == cli.FEED_PLACEHOLDER
-    assert cfg.cart.action.host == "shop.example"
+    # form_post is beta: links to product pages until the trampoline passes check V1.
+    assert cfg.cart.strategy == "link_list"
     out = capsys.readouterr().out
-    assert "adapter.feed" in out and "cart.secret" in out and "SHOPMCP_CART_SECRET" in out
+    assert "adapter.feed" in out and "cart.secret" not in out and "BETA" in out
 
 
 def test_scaffold_secret_stays_an_env_reference(workdir):

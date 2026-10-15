@@ -20,6 +20,15 @@ A local run adds `127.0.0.1:*` to `server.allowed_hosts` for its own request, so
 error: the store reads adapter.feed over the network; rerun with --online
 ```
 
+`--online` is the permission to read the store over the network: a local run fetches the https sources of `[adapter]` (a feed URL, or `site` of the `woocommerce` adapter) and so reads the live store. Without it such a config is refused, so a check never touches a shop by accident. With `--online` the local server waits for its first index up to **1860 s** (31 minutes), because a catalog API is read politely, page by page; without it, up to **60 s**. `--start-timeout SECONDS` sets the wait explicitly (a number above 0) in either case; when it runs out the run stops with a `RuntimeError`: `the local server did not start in N s (… a big catalog takes longer: --start-timeout)`:
+
+```bash
+uv run shopmcp check --online stores/my-shop/store.toml
+uv run shopmcp check --online --start-timeout 600 stores/my-shop/store.toml
+```
+
+Both flags apply to a local run only; with `--url` nothing is started.
+
 Exit codes: `0` nothing failed (skips do not count), `1` at least one check failed or the config is broken, `2` wrong usage (neither a config nor `--url`).
 
 The checks talk to the endpoint with raw JSON-RPC over HTTP, not through the MCP client SDK: the SDK would validate and hide what is actually on the wire.

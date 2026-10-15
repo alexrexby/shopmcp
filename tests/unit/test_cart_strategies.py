@@ -147,11 +147,14 @@ async def test_preset_golden_links(engine, alt, kind, url, add_urls):
 
 
 def test_golden_covers_every_get_preset():
-    # form_post presets (InSales, Shop-Script) belong to the trampoline tests.
+    # form_post (InSales, Shop-Script alt) belongs to the trampoline tests; a link_list
+    # without line_template is plain product page links, the same for every engine.
     covered = {(g[0], g[1]) for g in GOLDEN}
     for engine, preset in PRESETS.items():
         for alt, cart in ((False, preset.cart), (True, preset.alt_cart)):
             if cart is None or cart["strategy"] == "form_post":
+                continue
+            if cart["strategy"] == "link_list" and "line_template" not in cart:
                 continue
             if engine is Engine.ECWID and alt:
                 continue  # Wix: test_ecwid_on_wix_is_base64

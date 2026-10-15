@@ -33,7 +33,8 @@ positional arguments:
                         exit
     check               run the conformance checks (store.toml: served
                         locally; --url: live)
-    scaffold            create stores/<store_id>/store.toml
+    scaffold            create stores/<store_id>/store.toml; the engine is
+                        detected from the site (GET only)
 
 options:
   -h, --help            show this help message and exit
@@ -181,6 +182,14 @@ Notes:
    ```text
    created stores/my-shop/store.toml; edit the lines marked EDIT
    ```
+
+   For a store on a known engine give the site and let the scaffold pick the engine and the matching `[adapter]` and `[cart]`; `--feed` is optional then (the file marks the line `EDIT`):
+
+   ```bash
+   uv run shopmcp scaffold my-shop --site https://shop.example [--engine shopify] [--feed feed.xml]
+   ```
+
+   Without `--engine` the scaffold detects the engine with a few GET requests and prints the signs it found; "not determined" means set `--engine` by hand. Engines, presets and what to fill in: [engines.md](engines.md).
 
    `--prefix` sets the tool name prefix; by default it is the store id without dashes (`myshop` here). A second run for the same id refuses to overwrite:
 

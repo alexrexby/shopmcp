@@ -24,7 +24,11 @@
 | Менеджер пакетов / сборка | [uv](https://docs.astral.sh/uv/), hatchling |
 | Для разработки | pytest >= 8, ruff >= 0.6 |
 
-Готов один адаптер: `yml` (фид YML / Yandex Market Language, индексируется в SQLite). Адаптеры `bitrix`, `insales` и `http_json` пока заглушки. Roadmap: 10 engines — in progress. Подробности: [docs/ru/adapters.md](docs/ru/adapters.md).
+Готовые адаптеры: `yml` (фид YML / Yandex Market Language или Google Merchant, индексируется в SQLite) и `woocommerce` (снимок Store API без ключей). Адаптеры `bitrix`, `insales` и `http_json` пока заглушки. Подробности: [docs/ru/adapters.md](docs/ru/adapters.md).
+
+## Движки магазинов
+
+`shopmcp scaffold <id> --site URL` определяет движок магазина несколькими GET-запросами (или берёт `--engine`) и пишет для него готовые `[adapter]` и `[cart]`. Пресеты есть для десяти движков: Shopify, WooCommerce, Ecwid, 1С-Битрикс, PrestaShop, OpenCart, Magento 2, Tilda, InSales и Shop-Script. У InSales и Shop-Script корзина пока — ссылки на карточки; их корзина `form_post` — БЕТА (не проверена в живых браузерах; страницы-трамплина в коде пока нет) и пишется закомментированной. Таблица, что заполнить вручную и как работает определение: [docs/ru/engines.md](docs/ru/engines.md).
 
 ## Быстрый старт
 
@@ -42,8 +46,8 @@ Docker: `docker compose up -d --build`. Пошагово и с реальным 
 |---|---|
 | `shopmcp serve <store.toml>` | Запустить MCP-сервер по HTTP |
 | `shopmcp index <store.toml>` | Один раз построить поисковый индекс и выйти; печатает состояние адаптера JSON-ом |
-| `shopmcp check [store.toml] [--url URL] [--online]` | Проверки соответствия: локально или по живому эндпоинту |
-| `shopmcp scaffold <store_id> --feed … --site … [--prefix …] [--locale ru\|en]` | Создать `stores/<store_id>/store.toml` |
+| `shopmcp check [store.toml] [--url URL] [--online] [--start-timeout СЕКУНДЫ]` | Проверки соответствия: локально или по живому эндпоинту |
+| `shopmcp scaffold <store_id> --site URL [--engine X] [--feed F] [--prefix …] [--locale ru\|en]` | Создать `stores/<store_id>/store.toml`; движок определяется по сайту, если не задан `--engine` |
 
 ## Инструменты
 
@@ -70,7 +74,8 @@ Docker: `docker compose up -d --build`. Пошагово и с реальным 
 |---|---|
 | [docs/ru/quickstart.md](docs/ru/quickstart.md) | Демо-магазин локально и в Docker; свой магазин |
 | [docs/ru/configuration.md](docs/ru/configuration.md) | `store.toml` по полям, `${ENV}`, `locale`, `[texts]`, `[limits]`, `[auth]` |
-| [docs/ru/adapters.md](docs/ru/adapters.md) | Контракт адаптера, capabilities, как написать адаптер, адаптер `yml` |
+| [docs/ru/engines.md](docs/ru/engines.md) | Десять поддерживаемых движков: каталог, корзина, статус; определение; что заполнить |
+| [docs/ru/adapters.md](docs/ru/adapters.md) | Контракт адаптера, capabilities, как написать адаптер, адаптер `yml`, фид Google Merchant, адаптер `woocommerce` |
 | [docs/ru/conformance.md](docs/ru/conformance.md) | Проверки C1-C15, запуск по живому URL |
 | [docs/ru/auth.md](docs/ru/auth.md) | Гибридный доступ, OAuth resource server, scope на инструмент |
 | [docs/design-notes.ru.md](docs/design-notes.ru.md) | Почему фреймворк устроен именно так |
@@ -83,9 +88,11 @@ src/shopmcp/
   config.py         store.toml -> ${ENV} -> модели pydantic
   i18n.py           тексты ru/en и переопределения [texts]
   capabilities.py   перечень capabilities
-  adapters/         контракт, реестр, yml (готов), bitrix / insales / http_json (заглушки)
+  adapters/         контракт, реестр, yml (YML + Google Merchant), woocommerce, bitrix / insales / http_json (заглушки)
   tools/            описания инструментов
   cart/             стратегии передачи корзины
+  engines.py        пресеты десяти движков для scaffold
+  detect.py         определение движка по GET (scaffold)
   server/           ASGI-приложение, авторизация, лимит запросов, instructions
   conformance/      проверки C1-C15 и раннер
   templates/        шаблон store.toml для scaffold
