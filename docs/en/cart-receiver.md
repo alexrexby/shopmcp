@@ -6,7 +6,7 @@ For whom: the author of a store-side module (Bitrix, OpenCart, PrestaShop, Magen
 
 Why a token at all: the server keeps no carts. The whole handoff lives in the link, so it must not be editable and must expire. The token is **not** a JWT: a module verifies it with HMAC-SHA256 and a constant-time comparison, without a library and without an algorithm to choose.
 
-Contents: [Format](#format) · [Verifying](#verifying) · [Receiver behaviour](#receiver-behaviour) · [Test vectors](#test-vectors) · [What the signature does not give](#what-the-signature-does-not-give)
+Contents: [Format](#format) · [Verifying](#verifying) · [Receiver behaviour](#receiver-behaviour) · [Module safety](#module-safety) · [Test vectors](#test-vectors) · [What the signature does not give](#what-the-signature-does-not-give)
 
 ## Format
 
@@ -57,6 +57,17 @@ Normative for every module:
 - Remember `jti` in the session: a token seen before is not applied again, the customer is just redirected to the cart.
 - A product that is unavailable or unknown is skipped, with a flash message.
 - The result is a `302` to the cart page. An error is a `302` to the cart with a message — never a `500`, never a page that shows the token.
+
+## Module safety
+
+The token is signed, but its contents are the store's own ids, option names and values: treat them as input. A module is a PHP (or similar) code on the store, so it must:
+
+- Pass ids, options and quantities to the database only through **prepared statements** with bound parameters, never by gluing them into SQL.
+- Escape everything it prints (for example a flash message that names an id or an option from the token) with `htmlspecialchars` (or the engine's escaper) for the context it lands in.
+- Verify the signature **and** the expiry (with the 60 s skew) before reading any line; refuse a token of another store or an unknown `kid`.
+- Apply a `jti` **once**: remember it in the session (better, in a store of used `jti` until `exp`), so a repeated link does not add the lines again.
+
+A module that skips any of these is a vulnerability of the store, not of shopmcp. The `form_post` trampoline needs no module on the store side; these rules are for the `receiver` strategy.
 
 ## Test vectors
 

@@ -2,10 +2,11 @@
 
 Data only: detecting the engine lives in `detect.py`, rendering in the CLI. Strings may
 carry scaffold-time placeholders, replaced before the config is written and never seen
-at runtime: `{origin}` (scheme, host and port of `--site`: a store on http keeps http),
-`{base}` (the origin plus the path of `--site`, for an engine installed in a
-subdirectory), `{host}` (host and port), `{feed}` (feed URL), `{cart_path}`
-(PrestaShop's localized cart path). `${NAME}` is an environment variable, as anywhere in store.toml.
+at runtime: `{host}` (store host), `{base}` (host plus the path of `--site`, for an
+engine installed in a subdirectory), `{origin}` (scheme, host and port of `--site`; only
+the form_post presets: their POST must reach the store on its own scheme, check V1 on an
+http stand; every other preset writes `https://`), `{feed}` (feed URL), `{cart_path}` (PrestaShop's localized cart path).
+`${NAME}` is an environment variable, as anywhere in store.toml.
 Every preset is the default that needs no change on the store side; `cart_upgrade` says
 what a module or a snippet on the store would give instead.
 
@@ -104,7 +105,7 @@ PRESETS: Mapping[Engine, Preset] = {
         name="Shopify",
         cart={
             "strategy": "url_template",
-            "url_template": "{origin}/cart/{items}?storefront=true",
+            "url_template": "https://{host}/cart/{items}?storefront=true",
             "item_template": "{id}:{qty}",
             "item_separator": ",",
         },
@@ -127,9 +128,9 @@ PRESETS: Mapping[Engine, Preset] = {
         name="WooCommerce",
         cart={
             "strategy": "link_list",
-            "line_template": "{base}/cart/?add-to-cart={id}&quantity={qty}",
+            "line_template": "https://{base}/cart/?add-to-cart={id}&quantity={qty}",
         },
-        adapter={"kind": "woocommerce", "site": "{base}"},
+        adapter={"kind": "woocommerce", "site": "https://{base}"},
         notes=L10n(
             ru="Каталог — Store API без ключей. Ссылки-действия работают на любой версии "
             "WooCommerce; на версии 10+ одна ссылка ведёт сразу в оформление (см. alt_cart).",
@@ -138,7 +139,7 @@ PRESETS: Mapping[Engine, Preset] = {
         ),
         alt_cart={
             "strategy": "url_template",
-            "url_template": "{base}/checkout-link/?products={items}",
+            "url_template": "https://{base}/checkout-link/?products={items}",
             "item_template": "{id}:{qty}",
             "item_separator": ",",
         },
@@ -152,7 +153,7 @@ PRESETS: Mapping[Engine, Preset] = {
         name="Ecwid",
         cart={
             "strategy": "json_fragment",
-            "url_template": "{origin}/#!/~/cart/create={payload}",
+            "url_template": "https://{host}/#!/~/cart/create={payload}",
             "payload_encoding": "uri",
         },
         adapter=_feed("gmc"),
@@ -164,7 +165,7 @@ PRESETS: Mapping[Engine, Preset] = {
         ),
         alt_cart={
             "strategy": "json_fragment",
-            "url_template": "{origin}/!/~/cart/create={payload}",
+            "url_template": "https://{host}/!/~/cart/create={payload}",
             "payload_encoding": "base64",
         },
         alt_cart_when=L10n(ru="Магазин Ecwid на сайте Wix.", en="An Ecwid store on a Wix site."),
@@ -241,7 +242,7 @@ PRESETS: Mapping[Engine, Preset] = {
         name="PrestaShop",
         cart={
             "strategy": "link_list",
-            "line_template": "{origin}/{cart_path}?add=1&id_product={product_id}"
+            "line_template": "https://{host}/{cart_path}?add=1&id_product={product_id}"
             "&id_product_attribute={variant_id}&qty={qty}",
         },
         adapter=_feed("gmc"),
@@ -301,9 +302,9 @@ PRESETS: Mapping[Engine, Preset] = {
             "/tstore/yml/<hash>.yml from the store settings.",
         ),
         cart_upgrade=L10n(
-            ru="Сниппет в блоке T123: корзина одной ссылкой {origin}/#mcpcart=… "
+            ru="Сниппет в блоке T123: корзина одной ссылкой https://{host}/#mcpcart=… "
             "(url_template, без подписи).",
-            en="A snippet in a T123 block: the cart in one link {origin}/#mcpcart=… "
+            en="A snippet in a T123 block: the cart in one link https://{host}/#mcpcart=… "
             "(url_template, unsigned).",
         ),
         edit=("adapter.feed",),

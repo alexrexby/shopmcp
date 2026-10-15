@@ -56,10 +56,11 @@ SHOP_SCRIPT_CHAIN = {
     "strategy": "form_post",
     "mode": "chain",
     "action": "{site}/cart/add/",
-    "fields": [["product_id", "{product_id}"], ["quantity", "{qty}"]],
+    "fields": [["product_id", "{product_id}"], ["sku_id", "{variant_id}"], ["quantity", "{qty}"]],
     "finish_url": "{site}/cart/",
     "secret": "c" * 32,
 }
+OTHER_CHAIN = {**SHOP_SCRIPT_CHAIN, "fields": [["id", "{id}"], ["qty", "{qty}"]]}
 INSALES_SINGLE = {
     "strategy": "form_post",
     "mode": "single",
@@ -76,6 +77,8 @@ INSALES_SINGLE = {
         (SHOP_SCRIPT_CHAIN, "https://demo.example", "https://mcp.other.example/mcp", "warn"),
         (SHOP_SCRIPT_CHAIN, "http://demo.example", "http://mcp.other.example/mcp", "fail"),
         (INSALES_SINGLE, "https://demo.example", "https://mcp.other.example/mcp", "fail"),
+        # Review M3: SameSite=None is known for Webasyst only; another chain form fails.
+        (OTHER_CHAIN, "https://demo.example", "https://mcp.other.example/mcp", "fail"),
     ],
 )
 def test_form_post_trampoline_off_the_store_site_is_flagged(cart, site, public_url, status):

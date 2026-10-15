@@ -121,7 +121,7 @@ C12  ok   no held-open streams, no 500             GET 405, no listen stream
 C13  skip auth: 401, RFC 9728                      auth disabled
 C15  ok   CORS by allowed_origins                  CORS off
 C14  ok   rate limit                               429 at request 33 (earlier checks spent part of the bucket)
-14 ok, 0 failed, 1 skipped
+14 ok, 0 warnings, 0 failed, 1 skipped
 ```
 
 `check` сам поднимает магазин на свободном локальном порту с временным индексом, поэтому запущенный `serve` не мешает. Код возврата `0`, если ничего не упало, иначе `1`. Что проверяет каждая проверка: [conformance.md](conformance.md).
@@ -202,7 +202,7 @@ docker compose down -v
    ```text
    C6   fail search and paging                        search('CHANGE-ME') found nothing
    ...
-   12 ok, 1 failed, 1 skipped
+   12 ok, 0 warnings, 1 failed, 1 skipped
    ```
 
 4. Выполните `uv run shopmcp check stores/my-shop/store.toml`, затем `serve`.

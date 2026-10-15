@@ -74,8 +74,8 @@ Always: `brand`, `instructions`, `server.public_url`, `conformance.sample_query`
 | `shopify` | `adapter.feed` (Google Merchant feed from an app); check `[adapter.cart_ref]` `pattern` against the `g:id` of your feed |
 | `woocommerce` | nothing more; confirm the WooCommerce version if you want the one-link cart (uncomment the alternative `[cart]` block) |
 | `ecwid` | `adapter.feed`; product options for the cart in `[adapter.cart_ref]` `options` |
-| `insales` | `adapter.feed`; for `form_post` later, `SHOPMCP_CART_SECRET` in the environment |
-| `shop_script` | `adapter.feed`, `[adapter.cart_ref]` (how a feed id splits into product and SKU); for `form_post` later, `SHOPMCP_CART_SECRET` |
+| `insales` | `adapter.feed`; for `form_post`, `SHOPMCP_CART_SECRET` in the environment |
+| `shop_script` | `adapter.feed`, `[adapter.cart_ref]` (how a feed id splits into product and SKU); for `form_post`, `SHOPMCP_CART_SECRET` |
 | `bitrix` | `adapter.feed`; on a headless storefront remove `line_template` (scaffold does it when it detects one) |
 | `prestashop` | `adapter.feed`, `[adapter.cart_ref]` for ids like `12-34`, `cart.line_template`: the cart path depends on the storefront language (`cart`, `panier`, …) |
 | `opencart`, `magento`, `tilda` | `adapter.feed` |
@@ -84,14 +84,40 @@ Always: `brand`, `instructions`, `server.public_url`, `conformance.sample_query`
 
 ## form_post: beta
 
-`form_post` is the cart for InSales and Shop-Script, whose carts take POST only. It is **BETA**, so scaffold writes product page links (`link_list`) as the working cart and the `form_post` block commented out:
+`form_post` is the cart for InSales and Shop-Script, whose carts take POST only. It is **BETA**, so scaffold writes product page links (`link_list`) as the working cart and the `form_post` block commented out. To switch, uncomment the block, set `SHOPMCP_CART_SECRET` (at least 32 bytes) and run `shopmcp check`.
 
-- It is **not verified in live browsers** yet (live check V1 of the plan). Browsers treat a cross-site POST differently depending on cookie settings.
-- **From another site the engine can replace the customer's cart** instead of adding to it (observed on InSales). The risk is lower on a subdomain of the store (same site), so **host the shopmcp server on a subdomain of the store**, e.g. `mcp.shop.example` for `shop.example`.
-- Shop-Script posts the lines one by one and relies on the store returning the browser to the trampoline page; this is not verified either.
-- **The trampoline page itself is not in the code yet.** The `form_post` keys are validated, but a store with `strategy = "form_post"` does not start: `error: cart.strategy form_post: shopmcp.cart.form_post.create is unavailable`. Keep `link_list` or use `receiver` until it lands and passes check V1.
+### How it works
 
-Scaffold puts the same warning as a comment next to the `form_post` block.
+The cart link is `<origin of server.public_url>/cart/h/<signed token>` ([token format](cart-receiver.md#format)). The server keeps no carts: the lines are in the token. The page behind the link sends the lines to the store by POST from the customer's browser, so the store sees the customer's own cookies:
+
+- `single`: one form with every line, submitted on load (InSales `/cart_items`).
+- `chain`: one form per line. The store answers each POST with a redirect to the page the browser came from, and the page submits the next line; after the last one it goes to `finish_url` (Shop-Script `/cart/add/`). This works because the page asks for the full `Referer` (`Referrer-Policy: unsafe-url`) and the store returns the browser to it. No fallback path is needed. The page's CSP allows the store and `'self'` in `form-action`: without `'self'` Chromium blocks the redirect back to the page and the chain stops after one line.
+- Without JavaScript the same forms are buttons ("Add line 2 of 3").
+- `action` and `finish_url` come from `store.toml` only, never from the token; an expired or damaged link gives a `400` page with a link to the site.
+
+Opening the same link again (another tab, a back button) does not add the lines twice: the page finds its mark in the browser storage, says that the products were already sent, and offers a link to the cart and an **Add them again** button. With storage blocked (private mode) the page sends the lines on every open.
+
+### Where to host the server
+
+What happens depends on whether the browser sends the store's cart cookie with the POST. That is decided by the cookie's `SameSite` attribute and by whether the page is on the store's site. A site is the registrable domain by the Public Suffix List, so `mcp.shop.example`, `www.shop.example` and `shop.example` are one site, while `a.github.io` and `b.github.io` are two.
+
+**Host the shopmcp server on a subdomain of the store** (`server.public_url = "https://mcp.shop.example/mcp"` for `shop.example`). Then the cookie always goes with the POST.
+
+Live check V1 (15.10.2026, a local Shop-Script stand, Chromium; a cart of three lines was added to a customer cart that already held another line):
+
+| Server | Store cart cookie | Result |
+|---|---|---|
+| a subdomain of the store (same site) | any | The cart is built, earlier lines are kept |
+| another site | `SameSite=None` (Webasyst on HTTPS) | The same: the cart is built, earlier lines are kept |
+| another site | `Lax` (a store on http; InSales by reconnaissance, not checked live) | The cart is **replaced**: every POST starts a new cart, only the last line stays. The page still reaches `finish_url`, so the customer sees no error |
+
+The age of the cart or of the cookie made no difference. `single` mode was not run live: the rule for InSales (another site replaces the cart) rests on reconnaissance.
+
+Not checked: a real HTTPS connection in a browser (the `SameSite=None; Secure` cookie was checked by substituting the attribute on a local stand), Safari, InSales on a live store. This is why `form_post` stays **BETA** and the InSales and Shop-Script presets default to `link_list`.
+
+`shopmcp check` applies this table as C11 (see [conformance.md](conformance.md#how-c11-judges-form_post)): it fails where the cart would be replaced and warns where it depends on the store's cookie.
+
+Scaffold puts the same warning as a comment next to the `form_post` block; for a store on http it adds that `form_post` works only from a subdomain of the store.
 
 ## Notes per engine
 

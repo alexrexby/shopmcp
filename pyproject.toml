@@ -8,6 +8,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "mcp==2.3.0",
+    "publicsuffixlist==1.0.2.20260925",
     "pyjwt[crypto]>=2.10",
     "snowballstemmer>=3",
 ]

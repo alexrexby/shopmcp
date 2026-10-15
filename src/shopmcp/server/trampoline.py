@@ -8,9 +8,14 @@ to `finish_url`. Without JavaScript the same forms are buttons.
 
 A link opened again, in another tab too, must not add its lines twice: the first submit
 marks `localStorage["mcp:done:" + jti]` (one origin, every tab), and a page that finds the
-mark shows "already sent" with a link to the cart and an "add again" button instead. The
-chain's own returns are told apart by the per-tab counter. Without storage (blocked,
-private mode) the page sends as before.
+mark shows "already sent" with a link to the cart and an "add again" button instead. A
+chain writes there how many forms it has sent, before each one: a chain cut short (the tab
+closed after 1 of 3) shows "sent k of n" with "continue" (from k + 1) and "add all again".
+The chain's own returns are told apart by the per-tab counter. A page restored from the
+back-forward cache does not run its script again: on `pageshow` with `persisted` it shows
+the same block, not the form that would send again. Without localStorage (blocked, private
+mode) `single` sends as before and so does a chain while sessionStorage works; without
+sessionStorage the chain script stops (it has no counter) and the buttons stay.
 
 Ids in the token are any printable text (cart/refs.py), so the page is safe only by
 escaping: every attribute and text through `html.escape(quote=True)`, the JSON with `<`,
@@ -50,28 +55,38 @@ SINGLE_SCRIPT = """(function () {
     try { localStorage.setItem(key, "1"); } catch (e) {}
     HTMLFormElement.prototype.submit.call(document.getElementById("mcp-form"));
   }
+  function show() {
+    document.getElementById("mcp-run").hidden = true;
+    done.hidden = false;
+  }
+  document.getElementById("mcp-again").addEventListener("click", send);
+  window.addEventListener("pageshow", function (e) {
+    if (e.persisted) show();
+  });
   var seen = null;
   try { seen = localStorage.getItem(key); } catch (e) {}
   if (seen === null) {
     send();
     return;
   }
-  document.getElementById("mcp-run").hidden = true;
-  done.hidden = false;
-  document.getElementById("mcp-again").addEventListener("click", send);
+  show();
 })();"""
 CHAIN_SCRIPT = """(function () {
   var data = JSON.parse(document.getElementById("mcp-chain").textContent);
+  var total = data.forms.length;
   var key = "mcp:" + data.jti;
   var mark = "mcp:done:" + data.jti;
+  function sent() {
+    var k = null;
+    try { k = localStorage.getItem(mark); } catch (e) {}
+    return k === null ? null : Number(k);
+  }
   function step(next) {
-    if (next >= data.forms.length) {
+    if (next >= total) {
       location.replace(data.finish);
       return;
     }
-    if (next === 0) {
-      try { localStorage.setItem(mark, "1"); } catch (e) {}
-    }
+    try { localStorage.setItem(mark, String(next + 1)); } catch (e) {}
     sessionStorage.setItem(key, String(next + 1));
     var form = document.createElement("form");
     form.method = "post";
@@ -86,16 +101,32 @@ CHAIN_SCRIPT = """(function () {
     document.body.appendChild(form);
     HTMLFormElement.prototype.submit.call(form);
   }
+  function show(k) {
+    document.getElementById("mcp-run").hidden = true;
+    document.getElementById("mcp-done").hidden = false;
+    if (k === null || k >= total) return;
+    document.getElementById("mcp-all").hidden = true;
+    document.getElementById("mcp-part").hidden = false;
+    var count = document.getElementById("mcp-sent");
+    if (count) count.textContent = String(k);
+    document.getElementById("mcp-continue").hidden = false;
+    var again = document.getElementById("mcp-again");
+    again.textContent = again.getAttribute("data-all");
+  }
+  document.getElementById("mcp-continue").addEventListener("click", function () {
+    step(sent() || 0);
+  });
+  document.getElementById("mcp-again").addEventListener("click", function () { step(0); });
+  window.addEventListener("pageshow", function (e) {
+    if (e.persisted) show(sent());
+  });
   var next = Number(sessionStorage.getItem(key) || 0);
-  var seen = null;
-  try { seen = localStorage.getItem(mark); } catch (e) {}
-  if (next > 0 || seen === null) {
+  var k = sent();
+  if (next > 0 || k === null) {
     step(next);
     return;
   }
-  document.getElementById("mcp-run").hidden = true;
-  document.getElementById("mcp-done").hidden = false;
-  document.getElementById("mcp-again").addEventListener("click", function () { step(0); });
+  show(k);
 })();"""
 
 _TITLE = define(
@@ -132,6 +163,21 @@ _AGAIN = define(
     "trampoline.again",
     ru="Добавить ещё раз",
     en="Add them again",
+)
+_SENT = define(
+    "trampoline.chain.sent",
+    ru="Отправлено позиций: {sent} из {total}, остальные нет: возможно, вкладку закрыли раньше.",
+    en="Lines sent: {sent} of {total}, the rest not: perhaps the tab was closed too early.",
+)
+_CONTINUE = define(
+    "trampoline.chain.continue",
+    ru="Продолжить",
+    en="Continue",
+)
+_AGAIN_ALL = define(
+    "trampoline.chain.again_all",
+    ru="Добавить всё ещё раз",
+    en="Add all of them again",
 )
 _TO_SITE = define(
     "trampoline.to_site",
@@ -221,6 +267,22 @@ def route(cfg: StoreConfig, texts: Texts) -> Callable[[Request], Awaitable[Respo
             "</button></p></div>"
         )
 
+    def chain_done(jti: str, total: int) -> str:
+        """`done` for a chain: all of it sent, or k of `total` (the script fills k in
+        `mcp-sent` and shows "continue" and "add all again" instead)."""
+        sent = escape(text("trampoline.chain.sent", _SENT, total=total))
+        sent = sent.replace("{sent}", '<span id="mcp-sent"></span>', 1)
+        again_all = escape(text("trampoline.chain.again_all", _AGAIN_ALL), quote=True)
+        return (
+            f'<div id="mcp-done" data-jti="{escape(jti, quote=True)}" hidden>'
+            f'<p id="mcp-all">{escape(text("trampoline.done", _DONE))}</p>'
+            f'<p id="mcp-part" hidden>{sent}</p>'
+            f'<p><button type="button" id="mcp-continue" hidden>'
+            f"{escape(text('trampoline.chain.continue', _CONTINUE))}</button> "
+            f'<button type="button" id="mcp-again" data-all="{again_all}">'
+            f"{escape(text('trampoline.again', _AGAIN))}</button></p></div>"
+        )
+
     def invalid() -> Response:
         body = f"<p>{escape(text('trampoline.invalid', _INVALID))}</p>" + link(
             str(cfg.site), text("trampoline.to_site", _TO_SITE)
@@ -261,7 +323,7 @@ def route(cfg: StoreConfig, texts: Texts) -> Callable[[Request], Awaitable[Respo
         data = {"jti": jti, "action": action, "finish": finish, "forms": forms}
         body = (
             f'<div id="mcp-run"><p>{escape(text("trampoline.chain.hint", _CHAIN_HINT))}</p>'
-            f"{buttons}</div>{done(jti)}{link(finish, text('trampoline.go', _GO))}"
+            f"{buttons}</div>{chain_done(jti, len(forms))}{link(finish, text('trampoline.go', _GO))}"
             f'<script type="application/json" id="mcp-chain">{script_json(data)}</script>'
         )
         # 'self': the store answers the POST with a redirect back here, and form-action

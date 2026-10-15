@@ -94,7 +94,7 @@ options = { Size = "size" }
 | `link_list` | покупатель, по ссылкам на карточки | `line_template` |
 | `url_template` | магазин, по одной GET-ссылке | `url_template`, `item_template`, `item_separator` |
 | `json_fragment` | скрипт магазина, из фрагмента URL (Ecwid) | `url_template`, `payload_encoding` |
-| `form_post` | наша страница-трамплин, POST-ом в магазин (бета) | `action`, `mode`, `fields`, `finish_url`, `secret`, `ttl_minutes` |
+| `form_post` | наша страница-трамплин `/cart/h/<токен>` на этом сервере, POST-ом в магазин (бета) | `action`, `mode`, `fields`, `finish_url`, `secret`, `ttl_minutes` |
 | `receiver` | наш модуль на сайте магазина, по подписанной ссылке | `url_template`, `secret`, `key_id`, `ttl_minutes` |
 | `share_link` | API магазина, общая корзина | нет |
 
@@ -105,7 +105,7 @@ options = { Size = "size" }
 | `item_template` | `url_template` | Одна позиция корзины; должна содержать `{id}` или `{product_id}` | обязательно |
 | `item_separator` | `url_template` | Строка между позициями | `&` |
 | `payload_encoding` | `json_fragment` | `uri` (JSON с процентным кодированием) или `base64` (Ecwid на Wix) | `uri` |
-| `action` | `form_post` | URL, на который отправляется форма | обязательно |
+| `action` | `form_post` | URL, на который отправляется форма; на сайте магазина, как и любой URL секции | обязательно |
 | `mode` | `form_post` | `single`: одна форма со всеми позициями; `chain`: форма на каждую позицию, магазин возвращает браузер обратно | обязательно |
 | `fields` | `form_post` | Список пар `[имя, значение]`, 1-10, обе части — шаблоны; поле, давшее пустое значение, не отправляется. Хотя бы одно должно содержать `{id}` или `{product_id}` | обязательно |
 | `finish_url` | `form_post` | Где кончается цепочка: страница корзины. Обязателен для `chain` | не задано |
@@ -128,12 +128,14 @@ options = { Size = "size" }
 
 В `line_template` query-параметр, плейсхолдер которого дал пустое значение, опускается (`id_product_attribute=` у товара без комбинаций). В `item_template` он остаётся: параллельные массивы (`product[]`, `variant[]`) связывают позиции по номеру.
 
+Слоты времени scaffold. В пресете (`src/shopmcp/engines.py`) URL содержат `{origin}` (схема, хост и порт из `--site`; магазин на http остаётся на `http`), `{base}` (`{origin}` плюс путь из `--site`, для движка в подкаталоге), `{host}` (хост и порт), `{feed}`, `{cart_path}`. `shopmcp scaffold` подставляет их при записи `store.toml`; в готовом файле их нет, и плейсхолдерами времени работы они не являются.
+
 Стратегии:
 
 - `link_list` работает в любом магазине: ссылки на карточки товаров с количествами. С `line_template`, например `https://shop.example/cart/?add-to-cart={id}&quantity={qty}`, у каждой позиции есть ещё и ссылка, добавляющая именно её.
 - `url_template` собирает один URL, например `https://shop.example/cart/add?id[]=1&qty[]=2&id[]=5&qty[]=1`. Если URL получился бы длиннее 2000 символов, ответ деградирует до `link_list` с пояснением.
 - `json_fragment`: `url_template` вида `https://shop.example/#!/~/cart/create={payload}`; корзина — `{"products":[{"id":…,"quantity":…,"options":{…}}]}`. Та же деградация при 2000 символах.
-- `form_post` — **бета**: ключи проверяются, но страницы-трамплина в коде пока нет, и магазин с этой стратегией не стартует. См. [engines.md](engines.md#form_post-бета).
+- `form_post` — **бета**. Ссылка ведёт на страницу-трамплин этого сервера, `<origin из server.public_url>/cart/h/<токен>`; страница отправляет позиции POST-ом на `action` из браузера покупателя. `mode = "single"` шлёт одну форму, `"chain"` — форму на позицию и требует `finish_url`. Исход зависит от того, где размещён сервер относительно магазина: размещайте его на поддомене магазина, а как `shopmcp check` (C11) оценивает пару, читайте в [engines.md](engines.md#form_post-бета) и [conformance.md](conformance.md#как-c11-оценивает-form_post). В `fields` допустимы только `{id}`, `{product_id}`, `{variant_id}`, `{qty}`; любой другой плейсхолдер останавливает старт. Имя поля с `[` или `]` в id (`variant_ids[{id}]` и id `a[b]`) изменило бы структуру для Rails и PHP, поэтому такая корзина деградирует до `link_list` с пояснением.
 - `receiver` строит ссылку на модуль на сайте магазина; формат токена и контракт модуля — в [cart-receiver.md](cart-receiver.md). Та же деградация при 2000 символах; в ответе есть `expires_at`.
 - `share_link` просит адаптер создать общую корзину на стороне магазина. Адаптер обязан объявить capability `share_link`, иначе старт падает. Инструмент при этом помечается как не только читающий (он создаёт объект в магазине).
 

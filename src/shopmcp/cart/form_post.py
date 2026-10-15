@@ -12,14 +12,15 @@ raw here (not with `strategies._values`, which percent-encodes). An id inside a 
 structure. Such a cart degrades to product page links, as an overlong one does.
 """
 
+import ipaddress
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
-from ipaddress import ip_address
 from typing import Literal
 from urllib.parse import urlsplit
 
+from publicsuffixlist import PublicSuffixList
 from pydantic import HttpUrl
 
 from shopmcp.cart.refs import CartRef
@@ -36,14 +37,15 @@ from shopmcp.config import ConfigError, FormPostCart
 from shopmcp.domain.models import CartHandoff, CartLine, Product
 from shopmcp.i18n import Texts, define
 
+_PSL = PublicSuffixList()  # the snapshot shipped with the package: no network
+
 PATH = "/cart/h/"  # the trampoline route is PATH + "{token}"
 KEY_ID = "1"  # FormPostCart has no key_id: one secret per store, rotation is a new secret
 
 # What a token line knows; `{url}`, `{items}` and the rest have nothing to fill in a form.
 FIELD_PLACEHOLDERS = frozenset({"id", "product_id", "variant_id", "qty"})
 _NAME_BREAKERS = ("[", "]")
-# Second-level labels under which a country registry sells names: shop.com.ru, shop.co.uk.
-_REGISTRY = frozenset({"ac", "co", "com", "edu", "gov", "msk", "net", "org", "pp", "spb"})
+_SHOP_SCRIPT_FIELDS = frozenset({"product_id", "sku_id", "quantity"})  # engines.py preset
 
 _UNSAFE_ID = define(
     "cart.note.form_unsafe_id",
@@ -76,9 +78,21 @@ def form(fields: Sequence[tuple[str, str]], ref: CartRef, quantity: Decimal) -> 
     return pairs
 
 
+def merged(lines: Sequence[tuple[CartRef, Decimal]]) -> list[tuple[CartRef, Decimal]]:
+    """Lines of one ref summed, in first-seen order. In `single` two lines of one id are one
+    field name twice (`variant_ids[70]`), and Rails keeps the last value: 1 + 2 would be 2."""
+    total: dict[str, tuple[CartRef, Decimal]] = {}
+    for ref, quantity in lines:
+        key = ref.model_dump_json()
+        seen = total.get(key)
+        total[key] = (ref, seen[1] + quantity if seen else quantity)
+    return list(total.values())
+
+
 def forms(cfg: FormPostCart, lines: Sequence[tuple[CartRef, Decimal]]) -> list[Form] | None:
-    """One form per line for `chain`, one form with every line for `single`."""
-    per_line = [form(cfg.fields, ref, quantity) for ref, quantity in lines]
+    """One form per line for `chain`, one form with every line for `single`; repeated refs
+    are one line (`merged`) in both modes."""
+    per_line = [form(cfg.fields, ref, quantity) for ref, quantity in merged(lines)]
     if any(f is None for f in per_line):
         return None
     done = [f for f in per_line if f is not None]
@@ -90,24 +104,38 @@ def origin(url: HttpUrl | str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def site(url: HttpUrl | str) -> str:
-    """The browser's "site" of `url`: scheme and registrable domain, no port.
-
-    A simplified Public Suffix List: the last two labels, three under a country registry's
-    second level (shop.com.ru, shop.co.uk). No list ships with the package and none is
-    fetched, so two hosts on one hosting platform of the PSL (a.github.io, b.github.io)
-    count as one site here while a browser sees two. A change of scheme is another site
-    (schemeful same-site), the cautious reading.
+def on_store_site(store: HttpUrl | str, ours: HttpUrl | str) -> bool:
+    """Whether `ours` is on the store's site as a browser sees it for SameSite: the same
+    registrable domain by the Public Suffix List (`mcp.shop.example` beside
+    `www.shop.example`), never two hosts of one platform (`a.kiev.ua`, `b.kiev.ua`).
+    An IP address or a name the list does not know is a site of its own host. Ports and
+    schemes are not compared here. Check V1 saw a sibling subdomain keep the cart.
     """
-    parts = urlsplit(str(url))
-    host = (parts.hostname or "").lower().rstrip(".")
+    return _site(_host(store)) == _site(_host(ours))
+
+
+def _site(host: str) -> str:
     try:
-        ip_address(host)
+        ipaddress.ip_address(host.strip("[]"))
     except ValueError:
-        labels = host.split(".")
-        keep = 3 if len(labels) > 2 and len(labels[-1]) == 2 and labels[-2] in _REGISTRY else 2
-        host = ".".join(labels[-keep:])
-    return f"{parts.scheme.lower()}://{host}"
+        pass
+    else:
+        return host
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return host
+    return _PSL.privatesuffix(ascii_host) or ascii_host
+
+
+def _host(url: HttpUrl | str) -> str:
+    return (urlsplit(str(url)).hostname or "").lower().rstrip(".")
+
+
+def _shop_script_like(cfg: FormPostCart) -> bool:
+    """The Shop-Script preset's form: the only one check V1 saw keep the cart cross-site."""
+    names = {name for name, _ in cfg.fields}
+    return urlsplit(str(cfg.action)).path.endswith("/cart/add/") and names >= _SHOP_SCRIPT_FIELDS
 
 
 def site_risk(cfg: FormPostCart, public_url: HttpUrl | str) -> tuple[Risk, str]:
@@ -118,25 +146,39 @@ def site_risk(cfg: FormPostCart, public_url: HttpUrl | str) -> tuple[Risk, str]:
     every POST starts a new cart: `single` replaces the customer's cart, `chain` leaves only
     its last line, and the page still reaches finish_url. A store on http cannot have a
     `SameSite=None` cookie (it needs `Secure`); InSales (the `single` preset) replaces the
-    cart from another site; Shop-Script on https sets `SameSite=None` (Safari not checked).
+    cart from another site; Webasyst (Shop-Script) on https sets `SameSite=None` (Safari not
+    checked), so only a chain shaped like its form gets `warn`, any other chain `fail`.
     """
-    store, ours = site(cfg.action), site(public_url)
-    if store == ours:
-        return "ok", f"trampoline on the store's site {store}"
+    store_scheme = urlsplit(str(cfg.action)).scheme.lower()
+    our_scheme = urlsplit(str(public_url)).scheme.lower()
+    store, ours = f"{store_scheme}://{_host(cfg.action)}", f"{our_scheme}://{_host(public_url)}"
+    subdomain = f"host the server on a subdomain of {_host(cfg.action).removeprefix('www.')}"
+    if on_store_site(cfg.action, public_url):
+        if store_scheme == our_scheme:
+            return "ok", f"trampoline on the store's site {store}"
+        return "fail", (
+            f"trampoline on {ours}, store on {store}: http and https are two sites for the "
+            "store's cookie, every POST starts a new cart; put the store and the server on "
+            "one scheme, https"
+        )
     where = f"trampoline on {ours}, store on {store}"
-    if urlsplit(str(cfg.action)).scheme != "https":
+    if store_scheme != "https":
         return "fail", (
             f"{where}: a store on http has no SameSite=None cookie, every POST from another "
-            "site starts a new cart; host the server on a subdomain of the store"
+            f"site starts a new cart; {subdomain}"
         )
     if cfg.mode == "single":
         return "fail", (
-            f"{where}: in single mode the store (InSales) replaces the customer's cart; "
-            "host the server on a subdomain of the store"
+            f"{where}: in single mode the store (InSales) replaces the customer's cart; {subdomain}"
+        )
+    if not _shop_script_like(cfg):
+        return "fail", (
+            f"{where}: from another site a store keeps the cart only if its cookie is "
+            f"SameSite=None, checked for Webasyst (Shop-Script) only; {subdomain}"
         )
     return "warn", (
-        f"{where}: the cart survives only if the store's cookie is SameSite=None (Shop-Script "
-        "on https: yes in Chromium, Safari not checked); a subdomain of the store is safe"
+        f"{where}: SameSite=None is checked for Webasyst on HTTPS only (Chromium, not "
+        f"Safari); check the Set-Cookie of your store's cart, or {subdomain}"
     )
 
 

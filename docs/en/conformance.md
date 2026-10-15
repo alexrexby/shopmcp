@@ -42,10 +42,10 @@ C6   fail search and paging                        search('CHANGE-ME') found not
 ...
 C13  skip auth: 401, RFC 9728                      auth disabled
 ...
-12 ok, 1 failed, 1 skipped
+12 ok, 0 warnings, 1 failed, 1 skipped
 ```
 
-Columns: id, status (`ok`, `fail`, `skip`), title, detail. A check that crashes counts as failed, with the exception in the detail. Some checks list at most five problems.
+Columns: id, status (`ok`, `warn`, `fail`, `skip`), title, detail. A check that crashes counts as failed, with the exception in the detail. Some checks list at most five problems.
 
 ## The checks
 
@@ -61,7 +61,7 @@ Columns: id, status (`ok`, `fail`, `skip`), title, detail. A check that crashes 
 | C8 | No HTML entity or tag in any string of any `structuredContent` |
 | C9 | `content[0].text` is compact JSON equal to `structuredContent`; error results are compact JSON without `structuredContent` |
 | C10 | Every response fits `max_response_bytes` (the biggest pages are requested on purpose); search returns only `meta`, `items`, `facets`, with at most 10 facets |
-| C11 | A cart of two found products is handed off by the configured strategy (a `url_template` degraded to `link_list` with a note is accepted); URLs are `https`, a `url_template` URL points at the store site and contains the ids; an unknown id is an `isError` result. Skipped if there is no cart tool |
+| C11 | A cart of two found products is handed off by the configured strategy (a `url_template` degraded to `link_list` with a note is accepted); URLs are `https`, a `url_template` URL points at the store site and contains the ids; an unknown id is an `isError` result. For `form_post` it also judges where the server is hosted relative to the store: `fail` or `warn`, see [below](#how-c11-judges-form_post). Skipped if there is no cart tool |
 | C12 | `GET` on the MCP path is `405`; `subscriptions/listen` does not open a stream; junk `POST` bodies do not produce a 5xx |
 | C13 | Auth. A personal tool called without a token is `401` with `resource_metadata` and the right `scope` in `WWW-Authenticate`; `/.well-known/oauth-protected-resource<path>` answers `200` and names the public URL as `resource`; a public tool needs no token. Skipped if `auth.enabled = false` or there are no personal tools |
 | C14 | Rate limit: request number `rate_per_minute + 1` gets `429` with a valid `Retry-After`. Local runs only (a live server would be throttled), and it needs a config. Runs last, after C15: it empties the bucket |
@@ -72,6 +72,21 @@ Limits of the suite:
 - Personal tools are called without a token only; the authorized path (a valid token, scope accepted) is not exercised. See [auth.md](auth.md) for how to check it by hand.
 - With the `yml` adapter there are no personal tools, so C13 is always skipped in practice.
 - The checks call read-only tools; with `cart.strategy = "share_link"`, C11 creates a real shared cart at the store.
+
+## How C11 judges form_post
+
+With `cart.strategy = "form_post"` C11 also asks whether the store will keep the customer's cart when the trampoline POSTs to it (`site_risk` in `src/shopmcp/cart/form_post.py`). It compares the site of `cart.action` with the site of `server.public_url` and needs the config; with `--url` and no config, or a run without `public_url`, this part is not applied.
+
+| Case | C11 |
+|---|---|
+| Same site (the server on a subdomain of the store) | `ok` |
+| Another site, `action` on `http` | `fail`: the store's cookie cannot be `SameSite=None`, every POST starts a new cart |
+| Another site, `mode = "single"` | `fail`: the store (InSales) replaces the cart |
+| Another site, the Shop-Script form (`/cart/add/` with `product_id`, `sku_id`, `quantity`), `action` on `https` | `warn`: the cart survives only if the store's cookie is `SameSite=None` (Shop-Script on https: yes in Chromium, Safari not checked) |
+
+`warn` is a new status: the check passes, the owner should look. It is printed in the report and counted in its own column (`14 ok, 1 warnings, 0 failed, 0 skipped`), and it does **not** change the exit code: `shopmcp check` still returns `0` while nothing failed. The ground of the rules is the live check V1 in [engines.md](engines.md#where-to-host-the-server).
+
+The "same site" rule is the registrable domain by the Public Suffix List, a snapshot shipped with the `publicsuffixlist` package (no network during the check): `mcp.shop.example` beside `www.shop.example` is one site, two hosts of a shared platform (`a.github.io`, `b.github.io`) are two. An IP address is a site of its own. The port is ignored; the same host with another scheme fails with its own message. Any other `form_post` off the store's site fails.
 
 ## Run against a live URL
 
@@ -97,7 +112,7 @@ C12  ok   no held-open streams, no 500             GET 405, no listen stream
 C13  skip auth: 401, RFC 9728                      auth disabled
 C15  ok   CORS by allowed_origins                  CORS off
 C14  skip rate limit                               only against a server the runner started (would throttle a live one)
-13 ok, 0 failed, 2 skipped
+13 ok, 0 warnings, 0 failed, 2 skipped
 ```
 
 Without the config the same server gives `C3 ... (canonical set, no config)`, `C10 ... budget unknown (no config)` `C13 skip ... no personal tools` and `C15 ... allowed_origins unknown`:
@@ -124,5 +139,6 @@ Practical points:
 | `C8 fail ... '&nbsp;...'` | Markup leaks from the source; pass the value through `clean_text()` in the adapter |
 | `C10 fail ... N > M bytes` | A response is bigger than `limits.max_response_bytes`; check what the adapter returns in one item |
 | `C11 fail ... kind 'x' != cart.strategy 'y'` | The live server runs another cart strategy than the config |
+| `C11 fail ... trampoline on X, store on Y` / `C11 warn ...` | `form_post` with the server on another site than the store; host it on a subdomain of the store, see [above](#how-c11-judges-form_post) |
 | `C13 fail ... HTTP 200, expected 401` | `auth.enabled` is `false` on the deployed server, or the tool has no scope |
 | `C12 fail GET /mcp: ... expected 405` | The path does not answer `GET` with `405`: the endpoint is not this framework, or a proxy in front changes the answer |

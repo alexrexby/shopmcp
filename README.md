@@ -28,7 +28,7 @@ Ready-made adapters: `yml` (a YML / Yandex Market Language or Google Merchant fe
 
 ## Store engines
 
-`shopmcp scaffold <id> --site URL` detects the engine of the store with a few GET requests (or takes `--engine`) and writes a ready `[adapter]` and `[cart]` for it. Ten engines have presets: Shopify, WooCommerce, Ecwid, 1C-Bitrix, PrestaShop, OpenCart, Magento 2, Tilda, InSales and Shop-Script. For InSales and Shop-Script the cart is product page links for now; their `form_post` cart is BETA (not verified in live browsers; the trampoline page is not in the code yet) and is written commented out. The table, what to fill in by hand and how detection works: [docs/en/engines.md](docs/en/engines.md).
+`shopmcp scaffold <id> --site URL` detects the engine of the store with a few GET requests (or takes `--engine`) and writes a ready `[adapter]` and `[cart]` for it. Ten engines have presets: Shopify, WooCommerce, Ecwid, 1C-Bitrix, PrestaShop, OpenCart, Magento 2, Tilda, InSales and Shop-Script. For InSales and Shop-Script the cart is product page links for now; their `form_post` cart (a trampoline page on the server that POSTs the lines to the store) is BETA and is written commented out: it is checked in Chromium on a local Shop-Script stand, not in Safari, not on a real HTTPS store and not on a live InSales. Host the server on a subdomain of the store; `shopmcp check` warns or fails when the cart could be replaced. The table, what to fill in by hand and how detection works: [docs/en/engines.md](docs/en/engines.md).
 
 ## Quick start
 

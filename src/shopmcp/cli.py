@@ -317,13 +317,14 @@ def _host(site: str) -> str:
 
 
 def _origin(site: str) -> str:
-    """Scheme, host and port of `site`: a store on plain http keeps http."""
+    """Scheme, host and port of `site`, for the form_post presets: their POST must reach a
+    store on plain http as http (check V1); every other preset writes `https://{host}`."""
     return f"{urllib.parse.urlsplit(site).scheme.lower()}://{_host(site)}"
 
 
 def _base(site: str) -> str:
-    """The origin and the path of `site` without the trailing slash: WordPress in `/shop/`."""
-    return _origin(site) + urllib.parse.urlsplit(site).path.rstrip("/")
+    """Host and the path of `site` without the trailing slash: WordPress in `/shop/`."""
+    return _host(site) + urllib.parse.urlsplit(site).path.rstrip("/")
 
 
 def render_store_toml(

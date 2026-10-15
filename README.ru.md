@@ -28,7 +28,7 @@
 
 ## Движки магазинов
 
-`shopmcp scaffold <id> --site URL` определяет движок магазина несколькими GET-запросами (или берёт `--engine`) и пишет для него готовые `[adapter]` и `[cart]`. Пресеты есть для десяти движков: Shopify, WooCommerce, Ecwid, 1С-Битрикс, PrestaShop, OpenCart, Magento 2, Tilda, InSales и Shop-Script. У InSales и Shop-Script корзина пока — ссылки на карточки; их корзина `form_post` — БЕТА (не проверена в живых браузерах; страницы-трамплина в коде пока нет) и пишется закомментированной. Таблица, что заполнить вручную и как работает определение: [docs/ru/engines.md](docs/ru/engines.md).
+`shopmcp scaffold <id> --site URL` определяет движок магазина несколькими GET-запросами (или берёт `--engine`) и пишет для него готовые `[adapter]` и `[cart]`. Пресеты есть для десяти движков: Shopify, WooCommerce, Ecwid, 1С-Битрикс, PrestaShop, OpenCart, Magento 2, Tilda, InSales и Shop-Script. У InSales и Shop-Script корзина пока — ссылки на карточки; их корзина `form_post` (страница-трамплин на сервере, которая шлёт позиции POST-ом в магазин) — БЕТА и пишется закомментированной: проверена в Chromium на локальном стенде Shop-Script, но не в Safari, не на настоящем HTTPS-магазине и не на живом InSales. Размещайте сервер на поддомене магазина; `shopmcp check` предупредит или провалит проверку, если корзина может подмениться. Таблица, что заполнить вручную и как работает определение: [docs/ru/engines.md](docs/ru/engines.md).
 
 ## Быстрый старт
 

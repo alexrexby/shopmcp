@@ -321,11 +321,26 @@ def test_scaffold_keeps_the_scheme_and_port_of_the_site(workdir, site):
     text = (workdir / "stores/my-shop/store.toml").read_text("utf-8")
     assert f'# action = "{site}/cart/add/"' in text
     assert f'# finish_url = "{site}/cart/"' in text
-    args[4:6] = ["--engine", "woocommerce"]
-    (workdir / "stores/my-shop/store.toml").unlink()
-    assert cli.main([*args[:-1], site + "/shop/"]) == 0
-    cfg = load(workdir / "stores/my-shop/store.toml")
-    assert cfg.adapter.model_extra["site"] == site + "/shop"
+
+
+@pytest.mark.parametrize("engine", list(Engine))
+def test_scaffold_on_an_http_site_keeps_https_outside_form_post(workdir, monkeypatch, engine):
+    # Review M1: the scheme of --site is for the form_post form only. Woo's adapter takes
+    # https only (the server would not start), Shopify/Ecwid links on http fail C11.
+    monkeypatch.setenv("SHOPMCP_CART_SECRET", "s" * 32)
+    site = "http://shop.example:8080/shop/"
+    args = ["scaffold", "my-shop", "--feed", FEED, "--engine", engine.value, "--site", site]
+    assert cli.main(args) == 0
+    path = workdir / "stores/my-shop/store.toml"
+    registry.create(load(path).adapter, CTX)  # ConfigError where the adapter wants https
+    urls = []
+    for line in path.read_text("utf-8").splitlines():
+        key, _, value = line.lstrip("# ").partition(" = ")
+        if "//shop.example:8080" in value and value.strip('"') != site:
+            urls.append((key, value.split('"')[1]))
+    for key, url in urls:
+        scheme = "http://" if key in ("action", "finish_url") else "https://"
+        assert url.startswith(scheme), (key, url)
 
 
 @pytest.mark.parametrize("site", ["http://shop.example:8080", "https://shop.example"])

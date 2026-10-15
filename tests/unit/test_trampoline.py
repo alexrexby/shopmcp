@@ -173,6 +173,22 @@ async def test_single_posts_every_line_in_one_form():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("cart", [INSALES, SHOP_SCRIPT])
+async def test_lines_of_one_id_are_one_line_with_the_sum(cart):
+    # Review M2: `variant_ids[2002]` twice is "last wins" in Rails: 1 + 2 arrived as 2.
+    lines = [
+        CartLine(product_id="2002", quantity=Decimal(1)),
+        CartLine(product_id="3003", quantity=Decimal(1)),
+        CartLine(product_id="2002", quantity=Decimal("2.5")),
+    ]
+    p = Page((await page(store(cart), lines=lines)).text)
+    if cart is INSALES:
+        assert p.forms[0]["fields"] == [("variant_ids[2002]", "3.5"), ("variant_ids[3003]", "1")]
+    else:
+        assert [dict(f)["quantity"] for f in chain_data(p)["forms"]] == ["3.5", "1"]
+
+
+@pytest.mark.anyio
 async def test_single_headers():
     res = await page(store(INSALES))
     assert res.status_code == 200 and res.headers["content-type"].startswith("text/html")
@@ -371,42 +387,68 @@ def test_form_post_cart_is_what_the_preset_gives():
     [
         ("https://shop.example/cart/add/", "https://mcp.shop.example/mcp", True),
         ("https://shop.example:8443/", "https://shop.example/", True),  # a port is not a site
-        ("https://www.shop.com.ru/", "https://mcp.shop.com.ru/", True),
-        ("https://one.com.ru/", "https://two.com.ru/", False),  # a registry's second level
+        ("https://www.shop.com.ru/", "https://mcp.shop.com.ru/", True),  # www. dropped
+        ("https://SHOP.example./", "https://mcp.shop.example/", True),
+        ("https://one.com.ru/", "https://two.com.ru/", False),
         ("https://shop.co.uk/", "https://mcp.co.uk/", False),
-        ("http://shop.lvh.me:18080/", "http://mcp.lvh.me:18100/", True),  # V1 A1-A3
+        ("https://a.kiev.ua/", "https://b.kiev.ua/", False),  # review L2: a public suffix
+        ("https://shop.example/", "https://mcp.ru.com/", False),
+        ("https://shop.example/", "https://evilshop.example/", False),  # not a label boundary
+        # V1 A1-A3: a sibling subdomain is the same site, the browser kept the cart.
+        ("http://shop.lvh.me:18080/", "http://mcp.lvh.me:18100/", True),
+        ("https://www.shop.example/", "https://mcp.shop.example/", True),
+        ("https://www.shop.example/", "https://shop.example/", True),
+        ("https://a.github.io/", "https://b.github.io/", False),  # a platform suffix
+        ("https://магазин.рф/", "https://mcp.xn--80aairftm.xn--p1ai/", True),
         ("http://shop.lvh.me:18080/", "http://mcp.127.0.0.1.nip.io:18100/", False),  # A4-A6
         ("http://shop.stand.localhost/", "http://mcp.other.localhost/", False),  # V1 Bк
-        ("https://shop.example/", "http://mcp.shop.example/", False),  # schemeful
         ("http://127.0.0.1:8080/", "http://127.0.0.1:8000/", True),
         ("http://10.0.0.1/", "http://10.0.0.2/", False),  # an address is its own site
     ],
 )
-def test_site_is_the_registrable_domain_with_the_scheme(a, b, same):
-    assert (form_post.site(a) == form_post.site(b)) == same
+def test_the_store_site_is_its_host_or_under_it(a, b, same):
+    assert form_post.on_store_site(a, b) == same
 
 
-def _form(cart: dict[str, Any], scheme: str) -> FormPostCart:
+def _form(cart: dict[str, Any], scheme: str, **changes: Any) -> FormPostCart:
     raw = json.loads(json.dumps(cart).replace(f"https://{HOST}", f"{scheme}://{HOST}"))
-    return FormPostCart.model_validate(raw)
+    return FormPostCart.model_validate({**raw, **changes})
+
+
+OTHER = "https://mcp.other.example/mcp"
+CHAIN_OF_IDS = {"fields": [["id", "{id}"], ["qty", "{qty}"]]}  # not the Shop-Script form
 
 
 @pytest.mark.parametrize(
-    ("cart", "scheme", "public_url", "risk"),
+    ("cart", "scheme", "public_url", "changes", "risk"),
     [
-        (SHOP_SCRIPT, "https", f"https://mcp.{HOST}/mcp", "ok"),
-        (INSALES, "https", f"https://mcp.{HOST}/mcp", "ok"),
-        (SHOP_SCRIPT, "http", f"http://mcp.{HOST}/mcp", "ok"),  # V1 A1-A3
-        (SHOP_SCRIPT, "https", "https://mcp.other.example/mcp", "warn"),  # V1 B4-B6
-        (SHOP_SCRIPT, "http", "http://mcp.other.example/mcp", "fail"),  # V1 A4-A6
-        (INSALES, "https", "https://mcp.other.example/mcp", "fail"),  # replaces the cart
-        (INSALES, "http", "http://mcp.other.example/mcp", "fail"),
+        (SHOP_SCRIPT, "https", f"https://mcp.{HOST}/mcp", {}, "ok"),
+        (INSALES, "https", f"https://mcp.{HOST}/mcp", {}, "ok"),
+        (SHOP_SCRIPT, "http", f"http://mcp.{HOST}/mcp", {}, "ok"),  # V1 A1-A3
+        (SHOP_SCRIPT, "https", OTHER, {}, "warn"),  # V1 B4-B6
+        (SHOP_SCRIPT, "http", "http://mcp.other.example/mcp", {}, "fail"),  # V1 A4-A6
+        (INSALES, "https", OTHER, {}, "fail"),  # replaces the cart
+        (INSALES, "http", "http://mcp.other.example/mcp", {}, "fail"),
+        (SHOP_SCRIPT, "https", OTHER, CHAIN_OF_IDS, "fail"),  # review M3: not Webasyst
+        (SHOP_SCRIPT, "https", OTHER, {"action": f"https://{HOST}/basket/"}, "fail"),
     ],
 )
-def test_site_risk_of_a_cross_site_trampoline(cart, scheme, public_url, risk):
-    got, why = form_post.site_risk(_form(cart, scheme), public_url)
+def test_site_risk_of_a_cross_site_trampoline(cart, scheme, public_url, changes, risk):
+    got, why = form_post.site_risk(_form(cart, scheme, **changes), public_url)
     assert got == risk, why
-    assert ("subdomain" in why) == (risk != "ok")
+    assert (f"subdomain of {HOST}" in why) == (risk != "ok")
+    if risk == "warn":
+        assert "checked for Webasyst on HTTPS only" in why and "Set-Cookie" in why
+
+
+@pytest.mark.parametrize("cart", [SHOP_SCRIPT, INSALES])
+@pytest.mark.parametrize(
+    ("scheme", "public_url"), [("http", f"https://mcp.{HOST}/mcp"), ("https", f"http://{HOST}/")]
+)
+def test_a_trampoline_under_the_store_on_another_scheme_is_told_so(cart, scheme, public_url):
+    # Review L1: the server is already on a subdomain; the advice must be about the scheme.
+    risk, why = form_post.site_risk(_form(cart, scheme), public_url)
+    assert risk == "fail" and "one scheme" in why and "subdomain" not in why
 
 
 # --- a link opened again (check V1: a new tab added the lines twice) ----------------------
@@ -435,10 +477,17 @@ async def test_the_already_sent_block_is_hidden_and_keyed_by_the_jti(cart, scrip
 @pytest.mark.parametrize("script", [SINGLE_SCRIPT, CHAIN_SCRIPT])
 def test_the_scripts_mark_the_jti_for_every_tab(script):
     # sessionStorage is one tab: the mark that stops a second run lives in localStorage,
-    # set before the first POST and read only when this tab has not started the chain.
+    # set before every POST and read only when this tab has not started the chain.
     assert '"mcp:done:" +' in script and "localStorage.setItem(" in script
-    assert script.count("try {") == 2  # storage may be blocked: the page still sends
+    lines = script.splitlines()
+    # A blocked localStorage only loses the mark: single and the chain still send.
+    assert all("try {" in line for line in lines if "localStorage." in line)
+    # Review L3: the chain's counter is not guarded. Without sessionStorage the script stops
+    # before any POST and the buttons stay: a chain without a counter would loop on line 1.
+    assert all("try" not in line for line in lines if "sessionStorage." in line)
     assert 'getElementById("mcp-again").addEventListener("click"' in script
+    # Review L4: back from the store through bfcache shows the block, not the sending form.
+    assert '"pageshow"' in script and "e.persisted" in script
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
         assert sink not in script
 
@@ -449,3 +498,16 @@ async def test_single_offers_the_cart_or_the_site_when_already_sent():
     assert p.links == [str(store(INSALES).site)]  # no finish_url: the store's site
     finish = {**INSALES, "finish_url": f"https://{HOST}/cart_items"}
     assert Page((await page(store(finish))).text).links == [f"https://{HOST}/cart_items"]
+
+
+@pytest.mark.anyio
+async def test_a_chain_cut_short_offers_to_continue():
+    # Review L3: the tab closed after 1 of 3 must not read "already sent" for all of them.
+    res = await page(store(SHOP_SCRIPT))
+    p = Page(res.text)
+    assert "hidden" in p.ids["mcp-part"] and "hidden" in p.ids["mcp-continue"]
+    assert "hidden" not in p.ids["mcp-all"] and "mcp-sent" in p.ids
+    assert p.ids["mcp-again"]["data-all"] == "Добавить всё ещё раз"
+    assert 'Отправлено позиций: <span id="mcp-sent"></span> из 2,' in res.text
+    assert "Продолжить" in res.text
+    assert 'getElementById("mcp-continue").addEventListener("click"' in CHAIN_SCRIPT

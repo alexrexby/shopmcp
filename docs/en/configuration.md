@@ -94,7 +94,7 @@ How the cart is handed to the store site. The tool is `<prefix>_cart_link_create
 | `link_list` | the customer, from product page links | `line_template` |
 | `url_template` | the store, from one GET link | `url_template`, `item_template`, `item_separator` |
 | `json_fragment` | the store script, from the URL fragment (Ecwid) | `url_template`, `payload_encoding` |
-| `form_post` | our trampoline page, by POST to the store (beta) | `action`, `mode`, `fields`, `finish_url`, `secret`, `ttl_minutes` |
+| `form_post` | our trampoline page `/cart/h/<token>` on this server, by POST to the store (beta) | `action`, `mode`, `fields`, `finish_url`, `secret`, `ttl_minutes` |
 | `receiver` | our module on the store site, from a signed link | `url_template`, `secret`, `key_id`, `ttl_minutes` |
 | `share_link` | the store API, a shared cart | none |
 
@@ -105,7 +105,7 @@ How the cart is handed to the store site. The tool is `<prefix>_cart_link_create
 | `item_template` | `url_template` | One cart line; must contain `{id}` or `{product_id}` | required |
 | `item_separator` | `url_template` | String between lines | `&` |
 | `payload_encoding` | `json_fragment` | `uri` (percent-encoded JSON) or `base64` (Ecwid on Wix) | `uri` |
-| `action` | `form_post` | URL the form is posted to | required |
+| `action` | `form_post` | URL the form is posted to; on the store's site, like every URL of the section | required |
 | `mode` | `form_post` | `single`: one form with all lines; `chain`: one form per line, the store sends the browser back | required |
 | `fields` | `form_post` | List of `[name, value]` pairs, 1-10, both are templates; a field that renders empty is not sent. At least one must contain `{id}` or `{product_id}` | required |
 | `finish_url` | `form_post` | Where a chain ends: the cart page. Required for `chain` | not set |
@@ -128,12 +128,14 @@ Placeholders of the templates. They are replaced in one pass (a substituted valu
 
 In a `line_template` a query parameter whose placeholder rendered empty is left out (`id_product_attribute=` of a product with no combinations). In an `item_template` it stays, because parallel arrays (`product[]`, `variant[]`) pair lines by position.
 
+Scaffold-time slots. In a preset (`src/shopmcp/engines.py`) the URLs carry `{origin}` (scheme, host and port of `--site`; a store on http keeps `http`), `{base}` (`{origin}` plus the path of `--site`, for an engine in a subdirectory), `{host}` (host and port), `{feed}`, `{cart_path}`. `shopmcp scaffold` replaces them while it writes `store.toml`; they never appear in the finished file and are not runtime placeholders.
+
 Strategies:
 
 - `link_list` works for any store: links to product pages with quantities. With `line_template`, e.g. `https://shop.example/cart/?add-to-cart={id}&quantity={qty}`, every line also carries a link that adds that line.
 - `url_template` builds one URL, e.g. `https://shop.example/cart/add?id[]=1&qty[]=2&id[]=5&qty[]=1`. If the URL would exceed 2000 characters, the answer degrades to `link_list` and carries a note.
 - `json_fragment`: a `url_template` such as `https://shop.example/#!/~/cart/create={payload}`; the cart is `{"products":[{"id":…,"quantity":…,"options":{…}}]}`. The same 2000-character degradation.
-- `form_post` is **beta**: the keys are validated, but the trampoline page is not in the code yet and a store with this strategy does not start. See [engines.md](engines.md#form_post-beta).
+- `form_post` is **beta**. The link points at the trampoline page of this server, `<origin of server.public_url>/cart/h/<token>`; the page POSTs the lines to `action` from the customer's browser. `mode = "single"` sends one form, `"chain"` one form per line and needs `finish_url`. The result depends on where the server is hosted relative to the store: host it on a subdomain of the store, and read how `shopmcp check` (C11) judges the pair in [engines.md](engines.md#form_post-beta) and [conformance.md](conformance.md#how-c11-judges-form_post). `fields` may use only `{id}`, `{product_id}`, `{variant_id}`, `{qty}`; any other placeholder stops the start. A field name with `[` or `]` in an id (`variant_ids[{id}]` and an id `a[b]`) would change the structure for Rails and PHP, so such a cart degrades to `link_list` with a note.
 - `receiver` builds a link to a module on the store site; the token format and the module contract are in [cart-receiver.md](cart-receiver.md). The same 2000-character degradation; the answer carries `expires_at`.
 - `share_link` asks the adapter to create a shared cart on the store side. The adapter must declare the `share_link` capability, otherwise the start fails. The tool is then marked as non-read-only (it creates an object at the store).
 
